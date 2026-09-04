@@ -15,8 +15,10 @@ export default defineConfig({
     // base on a quiet machine, bounded growth when oversubscribed.
     testTimeout: contentionBudgetMs(30_000),
     hookTimeout: contentionBudgetMs(30_000),
-    // Bound intra-suite self-load: several repositories are created at once.
-    maxWorkers: 2,
+    // Security-boundary cases materialize and execute immutable interpreter
+    // copies. Serialize files so concurrent filesystem/process stress cannot
+    // turn the release gate into transient Linux ETXTBSY/pipe-reset failures.
+    maxWorkers: 1,
     minWorkers: 1,
     // This lane is a merge-queue admission lane: refuse network sockets so
     // registry/API latency can never become candidate evidence.

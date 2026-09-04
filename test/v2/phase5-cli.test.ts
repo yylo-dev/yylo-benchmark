@@ -224,7 +224,7 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     const probeRoot = await mkdtemp(path.join(os.tmpdir(), 'yylo-topology-probe-'));
     const harness = path.join(probeRoot, 'topology-probe.mjs');
     const siblingHint = path.join(probeRoot, 'sibling-hint');
-    await writeFile(harness, `import{existsSync,readFileSync,readdirSync,writeFileSync}from'node:fs';import path from'node:path';const r=JSON.parse(process.env.YYLO_BENCHMARK_REQUEST_JSON);const outer=path.resolve(process.cwd(),'..');const hint=${JSON.stringify(siblingHint)};let sibling=null;let readable=0;if(existsSync(hint)){sibling=readFileSync(hint,'utf8');try{readdirSync(sibling);readable=1}catch{}}else writeFileSync(hint,outer);const probe={cwd:process.cwd(),pwd:process.env.PWD??null,oldpwd:process.env.OLDPWD??null,initCwd:process.env.INIT_CWD??null,projectRoot:process.env.PROJECT_ROOT??null,controllerRoot:process.env.CONTROLLER_ROOT??null,registryPath:process.env.REGISTRY_PATH??null,pathLeaksSource:(process.env.PATH??'').includes(process.env.EXPECTED_SOURCE??'never'),sourceRoute:existsSync(path.resolve(process.cwd(),'../../../../.juno_task')),registryRoute:existsSync(path.resolve(process.cwd(),'../../../registry')),siblingDiscovered:sibling!==null,siblingReadable:readable};const now=new Date().toISOString();process.stdout.write(JSON.stringify({status:'success',exit_code:0,signal:null,session_id:'probe',resolved_provider:'vendor',resolved_model:r.requestedModel,observed_provider:'vendor',observed_model:r.requestedModel,harness_version:'fixture-1',started_at:now,ended_at:now,runtime_ms:1,cost:{completeness:'not_applicable',usd:null},process:{pid:process.pid,command:['probe']},artifacts:[],raw_output:JSON.stringify(probe)}));`);
+    await writeFile(harness, `import{existsSync,readFileSync,readdirSync}from'node:fs';import path from'node:path';const r=JSON.parse(process.env.YYLO_BENCHMARK_REQUEST_JSON);const hint=${JSON.stringify(siblingHint)};let sibling=null;let readable=0;if(existsSync(hint)){sibling=readFileSync(hint,'utf8');try{readdirSync(sibling);readable=1}catch{}}const probe={cwd:process.cwd(),pwd:process.env.PWD??null,oldpwd:process.env.OLDPWD??null,initCwd:process.env.INIT_CWD??null,projectRoot:process.env.PROJECT_ROOT??null,controllerRoot:process.env.CONTROLLER_ROOT??null,registryPath:process.env.REGISTRY_PATH??null,pathLeaksSource:(process.env.PATH??'').includes(process.env.EXPECTED_SOURCE??'never'),sourceRoute:existsSync(path.resolve(process.cwd(),'../../../../.juno_task')),registryRoute:existsSync(path.resolve(process.cwd(),'../../../registry')),siblingDiscovered:sibling!==null,siblingReadable:readable};const now=new Date().toISOString();process.stdout.write(JSON.stringify({status:'success',exit_code:0,signal:null,session_id:'probe',resolved_provider:'vendor',resolved_model:r.requestedModel,observed_provider:'vendor',observed_model:r.requestedModel,harness_version:'fixture-1',started_at:now,ended_at:now,runtime_ms:1,cost:{completeness:'not_applicable',usd:null},process:{pid:process.pid,command:['probe']},artifacts:[],raw_output:JSON.stringify(probe)}));`);
     const configPath = path.join(root, 'yylo-benchmark.config.json');
     const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
     config.workspace = { attempts_root: '.yylo-benchmark/attempts', registry_root: '.yylo-benchmark/registry' };
@@ -241,14 +241,21 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
       process.env.PATH = `${path.join(root, 'node_modules', '.bin')}${path.delimiter}${previous.PATH ?? ''}`;
       const firstPlan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/one', '--output', 'plan-one.json']);
       const firstRun = await capture(root, ['run', '--plan', 'plan-one.json']);
+      const firstCandidate = firstRun.attempts[0].evidence.candidate;
+      expect(firstCandidate, JSON.stringify(firstCandidate.diagnostics)).toMatchObject({ exit_code: 0, status: 'success' });
+      const first = JSON.parse(firstCandidate.output) as Record<string, any>;
+      // Cross-run fixture coordination belongs to the trusted test parent. The
+      // candidate sandbox must never gain write access to this external path.
+      await writeFile(siblingHint, path.resolve(first.cwd, '..'));
       const alias = path.join(probeRoot, 'source-alias'); await symlink(root, alias);
       const secondPlan = await capture(alias, ['plan', '--task', 'task.md', '--models', 'vendor/two', '--output', 'plan-two.json']);
       const secondRun = await capture(alias, ['run', '--plan', 'plan-two.json']);
+      const secondCandidate = secondRun.attempts[0].evidence.candidate;
+      expect(secondCandidate, JSON.stringify(secondCandidate.diagnostics)).toMatchObject({ exit_code: 0, status: 'success' });
       expect(firstPlan.experiment_id).not.toBe(secondPlan.experiment_id);
-      const first = JSON.parse(firstRun.attempts[0].evidence.candidate.output) as Record<string, any>;
-      const second = JSON.parse(secondRun.attempts[0].evidence.candidate.output) as Record<string, any>;
+      const second = JSON.parse(secondCandidate.output) as Record<string, any>;
       expect(first).toMatchObject({ pwd: null, oldpwd: null, initCwd: null, projectRoot: null, controllerRoot: null, registryPath: null,
-        pathLeaksSource: false, sourceRoute: false, registryRoute: false, siblingReadable: 0 });
+        pathLeaksSource: false, sourceRoute: false, registryRoute: false, siblingDiscovered: false, siblingReadable: 0 });
       expect(path.resolve(first.cwd)).not.toContain(path.resolve(root));
       expect(second.siblingDiscovered).toBe(true);
       expect(second.siblingReadable).toBe(0);

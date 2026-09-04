@@ -34,7 +34,10 @@ export function linuxBubblewrapArguments(executable: string, args: readonly stri
   return ['--die-with-parent', '--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc',
     '--bind', path.resolve(options.cwd), path.resolve(options.cwd), ...writableRoots.flatMap((item) => ['--bind', item, item]),
     ...deniedPaths.filter((item) => existsSync(item)).flatMap((item) => ['--tmpfs', item]),
-    '--chdir', path.resolve(options.cwd), executable, ...args];
+    // bubblewrap synthesizes PWD after applying its own environment options.
+    // Strip it in the final exec boundary so the admitted candidate environment
+    // remains authoritative and does not expose generated workspace topology.
+    '--chdir', path.resolve(options.cwd), '/usr/bin/env', '-u', 'PWD', executable, ...args];
 }
 
 export function assertProcessTreeSupported(platform: NodeJS.Platform = process.platform): void {

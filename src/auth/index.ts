@@ -40,7 +40,7 @@ interface ReviewedLauncher { readonly bytes: Buffer; readonly interpreterBytes: 
 interface ResolvedBoundary { readonly launcher: ReviewedLauncher; readonly secret: Buffer }
 interface PinnedExecutable { readonly probe: FileHandle; readonly launch: FileHandle; readonly executablePath?: string; releasePath(): Promise<void>; cleanup(): Promise<void> }
 interface PinnedBoundary { readonly launcher: PinnedExecutable; readonly interpreter: PinnedExecutable; cleanup(): Promise<void> }
-interface RunningLauncher { readonly child: ChildProcess; readonly stdout: Buffer[]; readonly stderr: Buffer[]; readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; overflow(): boolean }
+interface RunningLauncher { readonly child: ChildProcess; readonly stdout: Buffer[]; readonly stderr: Buffer[]; readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; overflow(): boolean; failure(): Error | undefined }
 
 function hash(bytes: Uint8Array): string { return createHash('sha256').update(bytes).digest('hex'); }
 function safeError(message: string): Error { return new Error(`authenticated launcher boundary rejected the request: ${message}`); }
@@ -221,10 +221,22 @@ function spawnLauncher(handle: FileHandle, interpreter: string, input: Candidate
   const stdout: Buffer[] = []; const stderr: Buffer[] = []; let bytes = 0; let outputOverflow = false;
   const collect = (target: Buffer[]) => (chunk: Buffer): void => { bytes += chunk.length; if (bytes > 8 * 1024 * 1024) { outputOverflow = true; child.kill('SIGKILL'); } else target.push(chunk); };
   child.stdout?.on('data', collect(stdout)); child.stderr?.on('data', collect(stderr));
-  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-    child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal }));
+  let processFailure: Error | undefined;
+  for (const stream of operation === 'launch' ? [child.stdio[3], child.stdio[4]] : []) {
+    stream?.on('error', (error: NodeJS.ErrnoException) => {
+      // A launcher that rejects input or exits after detecting leakage may close
+      // these parent-side pipes before end() completes. That is normal process
+      // evidence, not an unhandled host exception.
+      if (error.code !== 'EPIPE' && error.code !== 'ECONNRESET') {
+        processFailure = error; child.kill('SIGKILL');
+      }
+    });
+  }
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once('error', (error) => { processFailure = error; resolve({ code: null, signal: null }); });
+    child.once('close', (code, signal) => resolve({ code, signal }));
   });
-  return { child, stdout, stderr, closed, overflow: () => outputOverflow };
+  return { child, stdout, stderr, closed, overflow: () => outputOverflow, failure: () => processFailure };
 }
 
 async function invokeLauncher(running: RunningLauncher, boundary: ResolvedBoundary, input: CandidateInvocation, operation: 'probe' | 'launch', timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null; signal: NodeJS.Signals | null; timedOut: boolean }> {
@@ -236,6 +248,8 @@ async function invokeLauncher(running: RunningLauncher, boundary: ResolvedBounda
   let timedOut = false; let force: NodeJS.Timeout | undefined;
   const timeout = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); force = setTimeout(() => child.kill('SIGKILL'), 1_000); }, timeoutMs);
   const closed = await running.closed.finally(() => { clearTimeout(timeout); if (force !== undefined) clearTimeout(force); });
+  const processFailure = running.failure();
+  if (processFailure !== undefined) throw safeError(`launcher process failed: ${processFailure.message}`);
   if (running.overflow()) throw safeError('launcher output exceeded the bounded capture limit');
   const cleanOut = scrub(Buffer.concat(running.stdout).toString('utf8'), boundary.secret); const cleanErr = scrub(Buffer.concat(running.stderr).toString('utf8'), boundary.secret);
   if (cleanOut.leaked) throw safeError('launcher stdout emitted credential material');

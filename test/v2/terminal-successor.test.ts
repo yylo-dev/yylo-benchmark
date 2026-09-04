@@ -114,6 +114,7 @@ describe('fT49yV terminal successor contracts', () => {
       const canonical = await realpath(directory); expect(argv.join('\0')).toContain(`--bind\0${canonical}\0${canonical}`);
     }
     expect(argv.join('\0')).toContain(`--tmpfs\0${protectedRoot}`);
+    expect(argv.slice(-6)).toEqual([repository, '/usr/bin/env', '-u', 'PWD', '/usr/bin/node', 'candidate.mjs']);
   });
 
   it('8lyWtv-002 rejects zero attempts and duplicate attempt identities in plans, doctor, and report', async () => {
