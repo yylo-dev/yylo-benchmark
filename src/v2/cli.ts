@@ -20,6 +20,15 @@ export const V2_EXPERIMENT_PLAN_SCHEMA_VERSION = 'yylo_benchmark_experiment_plan
 const execFileAsync = promisify(execFile);
 
 interface CommandHarnessConfig { readonly kind: 'command'; readonly executable: string; readonly arguments: readonly string[]; readonly timeout_ms: number }
+const COMMAND_HARNESS_DIAGNOSTIC_BYTES = 64 * 1024;
+const COMMAND_HARNESS_DIAGNOSTIC_TRUNCATED = '\n[command harness diagnostic truncated]\n';
+
+function boundedCommandHarnessDiagnostic(stdout: string, stderr: string): string {
+  const bytes = Buffer.from(`${stdout}${stderr}`, 'utf8');
+  if (bytes.length <= COMMAND_HARNESS_DIAGNOSTIC_BYTES) return bytes.toString('utf8');
+  const suffix = Buffer.from(COMMAND_HARNESS_DIAGNOSTIC_TRUNCATED, 'utf8');
+  return `${bytes.subarray(0, COMMAND_HARNESS_DIAGNOSTIC_BYTES - suffix.length).toString('utf8')}${COMMAND_HARNESS_DIAGNOSTIC_TRUNCATED}`;
+}
 interface PiHarnessConfig { readonly kind: 'yylo_pi'; readonly executable?: string; readonly prompt: string; readonly timeout_ms?: number; readonly arguments?: readonly string[] }
 interface WorkflowHarnessConfig { readonly kind: 'workflow_runner'; readonly executable: string; readonly timeout_ms?: number; readonly arguments?: readonly string[] }
 type HarnessConfig = CommandHarnessConfig | PiHarnessConfig | WorkflowHarnessConfig;
@@ -356,7 +365,11 @@ class CommandHarnessAdapter implements HarnessAdapter {
         resolved_provider: null, resolved_model: null, observed_provider: null, observed_model: null, harness_version: this.version,
         started_at: started.toISOString(), ended_at: ended.toISOString(), runtime_ms: output.runtimeMs, cost: { completeness: 'unavailable', usd: null }, process: { pid: output.pid, command: [this.#config.executable, ...this.#config.arguments] }, artifacts: [], raw_output: output.stdout };
     }
-    let parsed: unknown; try { parsed = JSON.parse(output.stdout) as unknown; } catch { parsed = { status: 'malformed_json', raw_output: output.stdout }; }
+    let parsed: unknown; try { parsed = JSON.parse(output.stdout) as unknown; } catch {
+      // Sandbox launch failures commonly have no stdout. Retain a bounded stderr
+      // diagnostic so the invalid terminal explains the fail-closed denial.
+      parsed = { status: 'malformed_json', raw_output: boundedCommandHarnessDiagnostic(output.stdout, output.stderr) };
+    }
     const terminal = (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
       ? parsed : { status: 'malformed_payload', raw_output: output.stdout }) as unknown as HarnessTerminalInput; const ended = new Date();
     const measuredFailure = output.code !== 0 || output.signal !== null;
@@ -387,11 +400,12 @@ function harnessAdapter(id: string, config: HarnessConfig): HarnessAdapter {
 
 async function captured(executable: string, args: readonly string[], cwd: string, environment: NodeJS.ProcessEnv, timeoutMs: number, stdin?: string,
   deniedPaths?: readonly string[]): Promise<{
-  pid: number | null; code: number | null; signal: string | null; stdout: string; timedOut: boolean; runtimeMs: number;
+  pid: number | null; code: number | null; signal: string | null; stdout: string; stderr: string; timedOut: boolean; runtimeMs: number;
 }> {
   const result = await runCapturedProcess(executable, args, { cwd, environment, timeoutMs, ...(stdin === undefined ? {} : { stdin }),
     ...(deniedPaths === undefined ? {} : { deniedPaths }) });
-  return { pid: result.pid, code: result.code, signal: result.signal, stdout: result.stdout, timedOut: result.timedOut, runtimeMs: result.runtimeMs };
+  return { pid: result.pid, code: result.code, signal: result.signal, stdout: result.stdout, stderr: result.stderr,
+    timedOut: result.timedOut, runtimeMs: result.runtimeMs };
 }
 
 function deterministicRunner(config: DeterministicEvaluatorConfig, cwd: string): DeterministicEvaluator {

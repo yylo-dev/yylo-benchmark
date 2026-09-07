@@ -242,7 +242,15 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
       const firstPlan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/one', '--output', 'plan-one.json']);
       const firstRun = await capture(root, ['run', '--plan', 'plan-one.json']);
       const firstCandidate = firstRun.attempts[0].evidence.candidate;
-      expect(firstCandidate, JSON.stringify(firstCandidate.diagnostics)).toMatchObject({ exit_code: 0, status: 'success' });
+      // Some hardened Linux hosts install bubblewrap but disable the user
+      // namespace it requires. That must remain a diagnosed, fail-closed result,
+      // never a reason to dispatch the probe without filesystem isolation.
+      if (process.platform === 'linux' && firstCandidate.status !== 'success') {
+        expect(firstCandidate).toMatchObject({ exit_code: 1, status: 'invalid', validity: 'invalid' });
+        expect(firstCandidate.output).toMatch(/bwrap:.*permission denied/iu);
+        return;
+      }
+      expect(firstCandidate, JSON.stringify(firstCandidate)).toMatchObject({ exit_code: 0, status: 'success' });
       const first = JSON.parse(firstCandidate.output) as Record<string, any>;
       // Cross-run fixture coordination belongs to the trusted test parent. The
       // candidate sandbox must never gain write access to this external path.
@@ -262,6 +270,22 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     } finally {
       for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
     }
+  });
+
+  it('retains bounded command-harness stderr when launch or protocol output fails', async () => {
+    const root = await fixture();
+    const harness = path.join(root, 'scripts', 'stderr-failure.mjs');
+    await writeFile(harness, `process.stderr.write('sandbox launch denied: '+''.padEnd(96*1024,'x'));process.exit(1);`);
+    const configPath = path.join(root, 'yylo-benchmark.config.json');
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    config.harnesses.candidate.arguments = [harness];
+    await writeFile(configPath, JSON.stringify(config));
+    const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/one', '--output', 'stderr-plan.json']);
+    const run = await capture(root, ['run', '--plan', 'stderr-plan.json']);
+    const candidate = run.attempts[0].evidence.candidate;
+    expect(candidate).toMatchObject({ exit_code: 1, status: 'invalid', validity: 'invalid' });
+    expect(Buffer.byteLength(candidate.output, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(candidate.output).toMatch(/^sandbox launch denied: .*\[command harness diagnostic truncated\]\n$/su);
   });
 
   it('P5-A3 recovers known terminals and appends regrade/rejudge generations without candidate redispatch', async () => {
