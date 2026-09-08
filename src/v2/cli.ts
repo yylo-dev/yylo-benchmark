@@ -182,7 +182,12 @@ export async function loadV2Config(cwd: string, configPath?: string): Promise<{ 
   try { bytes = await readFile(pathname); } catch { throw new Error(`v2 config is missing: ${pathname}`); }
   let parsed: unknown; try { parsed = JSON.parse(bytes.toString('utf8')) as unknown; } catch { throw new Error('v2 config is malformed JSON'); }
   const root = object(parsed, 'v2 config');
-  if (root['schema_version'] !== V2_CONFIG_SCHEMA_VERSION) throw new Error(`v2 config requires schema_version ${V2_CONFIG_SCHEMA_VERSION}`);
+  if (root['schema_version'] !== V2_CONFIG_SCHEMA_VERSION) {
+    if (root['schema_version'] === 'juno_benchmark_config.v1') {
+      throw new Error('this is a governed-workflow configuration, not an isolated-v2 configuration; use `yylo-benchmark workflow ... --config <path>` or `yylo-benchmark workflow migrate-config --input <path>`. Do not change schema_version alone');
+    }
+    throw new Error(`isolated-v2 config requires schema_version ${V2_CONFIG_SCHEMA_VERSION}; inspect it with \`yylo-benchmark workflow migrate-config --input <path>\`. No file was changed`);
+  }
   const workspaceInput = object(root['workspace'], 'workspace');
   const harnessInput = object(root['harnesses'], 'harnesses'); const harnesses: Record<string, HarnessConfig> = {};
   for (const [id, raw] of Object.entries(harnessInput)) {

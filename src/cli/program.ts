@@ -32,7 +32,7 @@ export function createProgram(options: ProgramOptions = {}): Command {
   const root = new Command();
   root
     .name('yylo-benchmark')
-    .description('Flexible isolated v2 task and workflow evaluation')
+    .description('Isolated v2 evaluation with an explicit governed workflow lane')
     .showHelpAfterError('Run yylo-benchmark --help for supported commands.')
     .version(PACKAGE_VERSION)
     .option('--config <path>', 'Use an explicit yylo-benchmark.config.json');

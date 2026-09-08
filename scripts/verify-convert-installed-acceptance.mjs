@@ -56,7 +56,7 @@ try {
   const rubric = await readFile(path.join(fixtureRoot, 'rubric.md'));
   if (sha256(rubric) !== expected.judge.rubric_hash) throw new Error('packaged governed rubric hash mismatch');
 
-  const planArgs = ['plan', '--workflow', expected.workflow_path, '--steps-file', path.basename(policyPath),
+  const planArgs = ['workflow', 'plan', '--workflow', expected.workflow_path, '--steps-file', path.basename(policyPath),
     '--steps', expected.selected_step_ids.join(','), '--models', ':sol,:mini,:luna,zai/glm-5.2', '--var', `run_date=${expected.historical_date}`, '--attempts', '1', '--dry-run'];
   const standalonePlanResult = execute(benchmark, planArgs); const plan = json(standalonePlanResult);
   await writeFile(planPath, `${standalonePlanResult.stdout.trim()}\n`, { mode: 0o600 });
@@ -83,14 +83,14 @@ try {
     expected.models.flatMap((model) => expected.selected_step_ids.map((step) => `${model}:1:${step}`)), 'strict sequential execution order');
 
   const comparisonPlanPath = path.join(project, 'aug-19-comparison-plan.json');
-  const comparisonArgs = ['plan', '--workflow', expected.workflow_path, '--steps-file', path.basename(policyPath),
+  const comparisonArgs = ['workflow', 'plan', '--workflow', expected.workflow_path, '--steps-file', path.basename(policyPath),
     '--steps', expected.selected_step_ids.join(','), '--models', ':mini,zai/glm-5.3', '--var', `run_date=${expected.requested_comparison_date}`, '--attempts', '1', '--dry-run'];
   const comparisonPlanResult = execute(benchmark, comparisonArgs); const comparisonPlan = json(comparisonPlanResult);
   await writeFile(comparisonPlanPath, `${comparisonPlanResult.stdout.trim()}\n`, { mode: 0o600 });
   same(comparisonPlan.models, expected.requested_comparison_models, 'Aug. 19 arbitrary exact model identities');
   same(comparisonPlan.model_dispatch_step_ids, expected.injection_step_ids, 'Aug. 19 model injection points');
   if (comparisonPlan.workflow_model_policy.workflow_models.includes('zai/glm-5.3')) throw new Error('exact model unexpectedly required a workflowModels catalog entry');
-  const comparisonDryRun = json(execute(benchmark, ['run', '--plan', path.basename(comparisonPlanPath), '--steps-file', path.basename(policyPath), '--dry-run']));
+  const comparisonDryRun = json(execute(benchmark, ['workflow', 'run', '--plan', path.basename(comparisonPlanPath), '--steps-file', path.basename(policyPath), '--dry-run']));
   same(comparisonDryRun.estimate_availability, [
     { model: 'openai-codex/gpt-5.6-terra', status: 'available' },
     { model: 'zai/glm-5.3', status: 'unavailable' },
@@ -98,9 +98,9 @@ try {
   if (comparisonDryRun.estimated_totals !== null) throw new Error('partial estimate overrides must not produce a false complete total');
 
   const operations = [
-    ['run', '--plan', path.basename(planPath), '--steps-file', path.basename(policyPath), '--dry-run'],
-    ['recover', '--plan', path.basename(planPath), '--steps-file', path.basename(policyPath), '--dry-run'],
-    ['rejudge', '--plan', path.basename(planPath), '--steps-file', path.basename(policyPath), '--dry-run'],
+    ['workflow', 'run', '--plan', path.basename(planPath), '--steps-file', path.basename(policyPath), '--dry-run'],
+    ['workflow', 'recover', '--plan', path.basename(planPath), '--steps-file', path.basename(policyPath), '--dry-run'],
+    ['workflow', 'rejudge', '--plan', path.basename(planPath), '--steps-file', path.basename(policyPath), '--dry-run'],
   ];
   const standalone = operations.map((operation) => execute(benchmark, operation));
   if (delegate) {
@@ -139,30 +139,30 @@ try {
     const gateEnvironment = extra => ({ YYLO_BENCHMARK_REGISTRY: registry, ...extra });
     const gate = (argv, extra = {}) => execute(benchmark, argv, project, gateEnvironment(extra));
     const delegatedGate = (argv, extra = {}) => execute(delegate, ['benchmark', ...argv], project, gateEnvironment(extra));
-    const setup = json(gate(['setup', '--synthetic']));
+    const setup = json(gate(['workflow', 'setup', '--synthetic']));
     const boundaryEnvironment = {
       YYLO_BENCHMARK_WORKFLOW_BOUNDARY: setup.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY,
       YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: setup.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256,
     };
-    const readiness = json(gate(['readiness', '--models', ':mini,zai/glm-5.3'], boundaryEnvironment));
+    const readiness = json(gate(['workflow', 'readiness', '--models', ':mini,zai/glm-5.3'], boundaryEnvironment));
     if (readiness.dispatch_count !== 0) throw new Error('synthetic readiness dispatched work');
     if (readiness.yylo.executable !== 'yy') throw new Error(`synthetic readiness must probe the normal yy launcher, saw ${readiness.yylo.executable}`);
-    const gatePlanArgs = ['plan', '--workflow', expected.workflow_path, '--steps-file', path.basename(policyPath),
+    const gatePlanArgs = ['workflow', 'plan', '--workflow', expected.workflow_path, '--steps-file', path.basename(policyPath),
       '--steps', expected.selected_step_ids.join(','), '--models', ':mini,zai/glm-5.3', '--var', `run_date=${expected.requested_comparison_date}`, '--attempts', '1', '--output', 'synthetic-plan.json', '--dry-run'];
     const gatePlan = json(gate(gatePlanArgs, boundaryEnvironment));
     if (gatePlan.selected_step_ids.length !== expected.selected_step_ids.length) throw new Error('synthetic gate must select the full 13-step tracked workflow');
-    const gateDryRun = json(gate(['run', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath), '--dry-run'], boundaryEnvironment));
+    const gateDryRun = json(gate(['workflow', 'run', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath), '--dry-run'], boundaryEnvironment));
     if (gateDryRun.dispatch_count !== 0) throw new Error('synthetic gate dry-run dispatched work');
-    const gateRun = json(gate(['run', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath)], boundaryEnvironment));
+    const gateRun = json(gate(['workflow', 'run', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath)], boundaryEnvironment));
     if (gateRun.recovered !== false || gateRun.terminals.length !== expected.selected_step_ids.length * expected.requested_comparison_models.length) {
       throw new Error(`synthetic gate run terminal contract failed (recovered ${gateRun.recovered}, terminals ${gateRun.terminals.length})`);
     }
     for (const terminal of gateRun.terminals) {
       if (!terminal.result.runner_run_id.startsWith('synthetic-run-')) throw new Error('synthetic gate dispatched a real provider child');
     }
-    const gateRerun = json(gate(['run', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath)], boundaryEnvironment));
+    const gateRerun = json(gate(['workflow', 'run', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath)], boundaryEnvironment));
     if (gateRerun.recovered !== true) throw new Error('synthetic gate duplicate-dispatch guard failed');
-    const gateRecover = json(gate(['recover', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath)], boundaryEnvironment));
+    const gateRecover = json(gate(['workflow', 'recover', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath)], boundaryEnvironment));
     if (gateRecover.recovered !== true) throw new Error('synthetic gate recovery without duplicate execution failed');
     if (delegate) {
       const delegatedPlan = delegatedGate(gatePlanArgs.filter((_, index) => gatePlanArgs[index] !== '--output' && gatePlanArgs[index - 1] !== '--output'), boundaryEnvironment);
@@ -245,7 +245,7 @@ exit 0
     });
     const stubGate = (argv, registry, extra = {}) => execute(benchmark, argv, stubProject,
       stubEnvironment({ YYLO_BENCHMARK_REGISTRY: registry, ...extra }));
-    const stubPlanArgs = ['plan', '--workflow', 'workflow.yaml', '--steps-file', path.basename(stubPolicyPath),
+    const stubPlanArgs = ['workflow', 'plan', '--workflow', 'workflow.yaml', '--steps-file', path.basename(stubPolicyPath),
       '--steps', 'purchases', '--models', ':mini', '--var', `run_date=${expected.requested_comparison_date}`,
       '--attempts', '1', '--output', 'stub-plan.json', '--dry-run'];
 
@@ -255,17 +255,17 @@ exit 0
     const registryA = path.join(temporary, 'stub-registry-envelope');
     const recordA = path.join(temporary, 'stub-record-envelope.log');
     const runsA = path.join(temporary, 'stub-runs-envelope.log');
-    const setupA = json(stubGate(['setup'], registryA));
+    const setupA = json(stubGate(['workflow', 'setup'], registryA));
     const boundaryEnvironment = {
       YYLO_BENCHMARK_WORKFLOW_BOUNDARY: setupA.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY,
       YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: setupA.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256,
     };
-    const readinessA = json(stubGate(['readiness', '--models', ':mini'], registryA, boundaryEnvironment));
+    const readinessA = json(stubGate(['workflow', 'readiness', '--models', ':mini'], registryA, boundaryEnvironment));
     if (readinessA.dispatch_count !== 0) throw new Error('live-stub readiness dispatched work');
     const stubPlan = json(stubGate(stubPlanArgs, registryA, boundaryEnvironment));
-    const dryRunA = json(stubGate(['run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath), '--dry-run'], registryA, boundaryEnvironment));
+    const dryRunA = json(stubGate(['workflow', 'run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath), '--dry-run'], registryA, boundaryEnvironment));
     if (dryRunA.dispatch_count !== 0) throw new Error('live-stub dry-run dispatched work');
-    const runA = json(stubGate(['run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryA,
+    const runA = json(stubGate(['workflow', 'run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryA,
       { ...boundaryEnvironment, YY_STUB_RECORD: recordA, YY_STUB_RUNS: runsA }));
     if (runA.recovered !== false || runA.terminals.length !== 1) throw new Error('live-stub envelope run terminal contract failed');
     if (runA.terminals[0].result.status !== 'success' || runA.terminals[0].result.observed_model !== 'openai-codex/gpt-5.6-terra') {
@@ -292,7 +292,7 @@ exit 0
     // consumer doctor command verifies the experiment from retained evidence.
     const registryB = path.join(temporary, 'stub-registry-failure');
     const runsB = path.join(temporary, 'stub-runs-failure.log');
-    const setupB = json(stubGate(['setup'], registryB));
+    const setupB = json(stubGate(['workflow', 'setup'], registryB));
     const boundaryB = {
       YYLO_BENCHMARK_WORKFLOW_BOUNDARY: setupB.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY,
       YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: setupB.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256,
@@ -300,15 +300,15 @@ exit 0
     const planB = json(stubGate(stubPlanArgs.filter((_, index) => stubPlanArgs[index] !== '--output' && stubPlanArgs[index - 1] !== '--output'), registryB, boundaryB));
     if (planB.plan_id !== stubPlan.plan_id) throw new Error('live-stub plans drifted between transport modes');
     const failureEnvironment = { ...boundaryB, YY_STUB_RUNS: runsB, YY_STUB_MODE: 'failure' };
-    const runB = json(stubGate(['run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryB, failureEnvironment));
+    const runB = json(stubGate(['workflow', 'run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryB, failureEnvironment));
     if (runB.terminals.length !== 1 || runB.terminals[0].result.status !== 'failure' || runB.terminals[0].result.effect !== 'completed') {
       throw new Error(`live-stub harness-failure terminal contract failed: ${JSON.stringify(runB.terminals)}`);
     }
     if ((await readFile(runsB, 'utf8')).split('\n').filter(Boolean).length !== 2) throw new Error('live-stub failure mode must run exactly one candidate child plus one judge child');
-    const rerunB = json(stubGate(['run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryB, failureEnvironment));
+    const rerunB = json(stubGate(['workflow', 'run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryB, failureEnvironment));
     if (rerunB.recovered !== true) throw new Error('live-stub duplicate-dispatch guard failed');
     if ((await readFile(runsB, 'utf8')).split('\n').filter(Boolean).length !== 2) throw new Error('recovery redispatched a completed harness failure');
-    const recoverB = json(stubGate(['recover', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryB, failureEnvironment));
+    const recoverB = json(stubGate(['workflow', 'recover', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryB, failureEnvironment));
     if (recoverB.recovered !== true) throw new Error('live-stub recovery without duplicate execution failed');
     const doctorB = json(stubGate(['doctor', `workflow-${stubPlan.plan_id.slice(7)}`], registryB, boundaryB));
     if (doctorB.ok !== true || doctorB.dispatchIntents !== 1 || doctorB.terminals !== 1

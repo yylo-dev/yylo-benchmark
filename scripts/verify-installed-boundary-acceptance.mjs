@@ -79,13 +79,14 @@ try {
   execute('git', ['config', 'user.email', 'acceptance@example.test'], project);
   execute('git', ['config', 'user.name', 'Acceptance'], project);
   await mkdir(path.join(project, 'scripts'), { recursive: true });
-  await mkdir(path.join(project, '.juno_task'), { recursive: true });
+  await mkdir(path.join(project, '.juno_task', 'workflows'), { recursive: true });
+  await mkdir(path.join(project, '.juno_task', 'specs', 'benchmark'), { recursive: true });
   await writeFile(path.join(project, 'scripts', 'track.py'), 'import sys\nprint("track argv:", sys.argv[1:])\n');
   await writeFile(path.join(project, 'yylo-benchmark.config.json'), JSON.stringify({
     schema_version: 'juno_benchmark_config.v1', repository_id: 'boundary-acceptance',
     model_aliases: { ':mini': 'openai-codex/gpt-5.6-terra' },
   }));
-  await writeFile(path.join(project, 'workflow.yaml'), `schema_version: 2
+  await writeFile(path.join(project, '.juno_task/workflows/daily_product_ops.yaml'), `schema_version: 2
 workflow_id: boundary-acceptance
 variables:
   run_date: '1970-01-01'
@@ -103,10 +104,15 @@ steps:
         Finish with one line.
   - id: compute
     command: [env, PYTHONPATH=., python3, scripts/track.py, "--date", "$(run_date)"]
+  - id: review
+    command: [yy, pi, "Review the retained evidence"]
+  - id: summary
+    command: [yy, pi, "Excluded summary"]
 `);
-  await writeFile(path.join(project, 'policy.yaml'), JSON.stringify({
+  const rubricBytes = 'Accept only independently supported resolved work.';
+  await writeFile(path.join(project, '.juno_task/specs/benchmark/daily-ops-policy.yaml'), JSON.stringify({
     schema_version: 'juno_benchmark_workflow_policy.v1',
-    judge: { judge_id: 'governed-binary', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: `sha256:${'a'.repeat(64)}` },
+    judge: { judge_id: 'governed-binary', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: sha256(rubricBytes), rubric: rubricBytes },
     authorization: { authorization_id: 'acceptance', production: true, spend: true },
     recovery: { ambiguous_effect: 'manual', max_recovery_attempts: 1 },
     redaction: { secret_patterns: ['TOKEN'], retain_prompts: false },
@@ -114,12 +120,14 @@ steps:
     steps: [
       { step_id: 'analyze', scoring_id: 'analyze-score', side_effect: 'production', resources: [], limits: { timeout_ms: 10_000, max_usd: 1 }, authorization: 'production_and_spend', recovery: 'manual', redaction: { patterns: [], retain_prompt: false } },
       { step_id: 'compute', scoring_id: 'compute-score', side_effect: 'none', resources: [], limits: { timeout_ms: 10_000, max_usd: 0 }, authorization: 'none', recovery: 'retry_safe', redaction: { patterns: [], retain_prompt: false } },
+      { step_id: 'review', scoring_id: 'review-score', side_effect: 'production', resources: [], limits: { timeout_ms: 10_000, max_usd: 1 }, authorization: 'production_and_spend', recovery: 'manual', redaction: { patterns: [], retain_prompt: false } },
+      { step_id: 'summary', scoring_id: 'summary-score', side_effect: 'none', resources: [], limits: { timeout_ms: 10_000, max_usd: 1 }, authorization: 'none', recovery: 'manual', redaction: { patterns: [], retain_prompt: false } },
     ],
   }));
-  execute('git', ['add', 'workflow.yaml', 'policy.yaml', 'scripts/track.py', 'yylo-benchmark.config.json'], project);
+  execute('git', ['add', '.juno_task/workflows/daily_product_ops.yaml', '.juno_task/specs/benchmark/daily-ops-policy.yaml', 'scripts/track.py', 'yylo-benchmark.config.json'], project);
   execute('git', ['commit', '-m', 'acceptance fixture'], project);
 
-  const setup = json(execute(benchmark, ['setup', '--synthetic'], project, identityEnvironment));
+  const setup = json(execute(benchmark, ['workflow', 'setup', '--synthetic'], project, identityEnvironment));
   if (setup.schema_version !== 'juno_benchmark_boundary_setup_receipt.v1') throw new Error('setup receipt schema is invalid');
   const installedBytes = await readFile(setup.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY);
   if (sha256(installedBytes) !== `sha256:${setup.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256}`) throw new Error('installed boundary bytes do not match the pinned digest');
@@ -129,7 +137,7 @@ steps:
     YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: setup.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256,
   };
 
-  const readiness = json(execute(benchmark, ['readiness', '--models', ':mini,zai/glm-5.3'], project, { ...identityEnvironment, ...boundaryEnvironment }));
+  const readiness = json(execute(benchmark, ['workflow', 'readiness', '--models', ':mini,zai/glm-5.3'], project, { ...identityEnvironment, ...boundaryEnvironment }));
   same(readiness.dispatch_count, 0, 'readiness dispatch count');
   same(readiness.transport ?? readiness.boundary.transport, 'synthetic', 'readiness transport');
   same(readiness.providers, ['openai-codex', 'zai'], 'readiness providers');
@@ -137,7 +145,7 @@ steps:
   same(readiness.yylo.version, identityVersion, 'readiness YYLO version binding');
   if (JSON.stringify(readiness).includes('TOKEN') || JSON.stringify(readiness).includes('API_KEY')) throw new Error('readiness receipt leaked credential-shaped material');
 
-  const planArgs = ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':mini,zai/glm-5.3', '--var', 'run_date=2026-08-19', '--output', 'plan.json', '--dry-run'];
+  const planArgs = ['workflow', 'plan', '--workflow', '.juno_task/workflows/daily_product_ops.yaml', '--steps-file', '.juno_task/specs/benchmark/daily-ops-policy.yaml', '--steps', 'analyze,compute,review', '--models', ':mini,zai/glm-5.3', '--var', 'run_date=2026-08-19', '--output', 'plan.json', '--dry-run'];
   const plan = json(execute(benchmark, planArgs, project, { ...identityEnvironment, ...boundaryEnvironment }));
   // Delegate parity compares a fresh no-output invocation so exclusive plan
   // outputs from the first run cannot collide.
@@ -146,32 +154,41 @@ steps:
     if (planArgs[index] === '--output') { index += 1; continue; }
     parityArgs.push(planArgs[index]);
   }
-  same(plan.selected_step_ids, ['analyze', 'compute'], 'selected steps');
+  same(plan.selected_step_ids, ['analyze', 'compute', 'review'], 'selected steps');
+  same(plan.execution_order.length, 6, 'three-step two-model matrix');
+  if (plan.execution_order.some((item) => item.step_id === 'summary')) throw new Error('excluded summary step entered execution order');
   same(plan.models, ['openai-codex/gpt-5.6-terra', 'zai/glm-5.3'], 'exact models');
   same(plan.runtime_binding.juno_version, identityVersion, 'plan YYLO version');
   same(plan.runtime_binding.boundary.sha256, `sha256:${boundaryEnvironment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256}`, 'plan boundary binding');
 
-  const dryRun = json(execute(benchmark, ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--dry-run'], project, { ...identityEnvironment, ...boundaryEnvironment }));
+  const dryRun = json(execute(benchmark, ['workflow', 'run', '--plan', 'plan.json', '--steps-file', '.juno_task/specs/benchmark/daily-ops-policy.yaml', '--dry-run'], project, { ...identityEnvironment, ...boundaryEnvironment }));
   same(dryRun.dispatch_count, 0, 'dry-run dispatch count');
 
-  const run = json(execute(benchmark, ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml'], project, { ...identityEnvironment, ...boundaryEnvironment }));
+  const run = json(execute(benchmark, ['workflow', 'run', '--plan', 'plan.json', '--steps-file', '.juno_task/specs/benchmark/daily-ops-policy.yaml'], project, { ...identityEnvironment, ...boundaryEnvironment }));
   same(run.plan_id, plan.plan_id, 'run plan binding');
   same(run.recovered, false, 'fresh run recovery');
-  same(run.terminals.length, 4, 'ordered step terminals');
+  same(run.terminals.length, 6, 'ordered step terminals');
+  same(run.judge_dispatch_count, 6, 'independent initial governed judgments');
   for (const terminal of run.terminals) {
     same(terminal.result.observed_model.split('/')[0], terminal.result.observed_provider, 'terminal identity composition');
     if (!terminal.result.runner_run_id.startsWith('synthetic-run-')) throw new Error('synthetic terminal was not labeled');
   }
 
-  const rerun = json(execute(benchmark, ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml'], project, { ...identityEnvironment, ...boundaryEnvironment }));
+  const rerun = json(execute(benchmark, ['workflow', 'run', '--plan', 'plan.json', '--steps-file', '.juno_task/specs/benchmark/daily-ops-policy.yaml'], project, { ...identityEnvironment, ...boundaryEnvironment }));
   same(rerun.recovered, true, 'duplicate dispatch guard');
-  const recover = json(execute(benchmark, ['recover', '--plan', 'plan.json', '--steps-file', 'policy.yaml'], project, { ...identityEnvironment, ...boundaryEnvironment }));
+  const recover = json(execute(benchmark, ['workflow', 'recover', '--plan', 'plan.json', '--steps-file', '.juno_task/specs/benchmark/daily-ops-policy.yaml'], project, { ...identityEnvironment, ...boundaryEnvironment }));
   same(recover.recovered, true, 'recovery without duplicate execution');
 
-  const rejudge = json(execute(benchmark, ['rejudge', '--plan', 'plan.json', '--steps-file', 'policy.yaml'], project, { ...identityEnvironment, ...boundaryEnvironment }));
+  const rejudge = json(execute(benchmark, ['workflow', 'rejudge', '--plan', 'plan.json', '--steps-file', '.juno_task/specs/benchmark/daily-ops-policy.yaml'], project, { ...identityEnvironment, ...boundaryEnvironment }));
   same(rejudge.candidate_dispatch_count, 0, 'rejudge candidate dispatch');
-  same(rejudge.judge_dispatch_count, 4, 'rejudge governed judge count');
+  same(rejudge.judge_dispatch_count, 0, 'valid retained judgments reused without duplicate judge dispatch');
   same(rejudge.boundary.sha256, `sha256:${boundaryEnvironment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256}`, 'rejudge boundary identity');
+  const doctor = json(execute(benchmark, ['workflow', 'doctor', '--plan', 'plan.json', '--steps-file', '.juno_task/specs/benchmark/daily-ops-policy.yaml'], project, { ...identityEnvironment, ...boundaryEnvironment }));
+  same(doctor.ok, true, 'governed doctor result');
+  same(doctor.terminals, 6, 'doctor terminal count');
+  const report = json(execute(benchmark, ['workflow', 'report', '--plan', 'plan.json'], project, { ...identityEnvironment, ...boundaryEnvironment }));
+  same(report.receipt_count, 6, 'report receipt count');
+  same(report.comparison.map((item) => item.step_id), ['analyze', 'compute', 'review'], 'report canonical selected steps');
 
   // A hash-consistent but unparsable compiled workflow must be rejected by the
   // boundary's own reader before any durable dispatch intent: no journal file

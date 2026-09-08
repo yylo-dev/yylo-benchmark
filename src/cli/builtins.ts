@@ -13,6 +13,7 @@ import {
   runV2Experiment,
   writeV2Plan,
 } from '../v2/cli.js';
+import { registerGovernedWorkflowCommands } from './governed.js';
 import {
   COMMAND_API_VERSION,
   type CommandContext,
@@ -126,4 +127,5 @@ export const BUILTIN_COMMANDS: readonly CommandDefinition[] = Object.freeze([
 
 export function registerBuiltinCommands(registry: CommandRegistry): void {
   for (const command of BUILTIN_COMMANDS) registry.registerBuiltin(command);
+  registerGovernedWorkflowCommands(registry);
 }

@@ -282,8 +282,14 @@ export async function rejudgeRetainedWorkflowStep(input: { readonly registry: Im
 export interface WorkflowExperimentReport { readonly schema_version: typeof WORKFLOW_REPORT_SCHEMA_VERSION; readonly report_id: Hash; readonly plan_id: Hash; readonly receipt_count: number; readonly expected_receipt_count: number;
   readonly totals: { readonly resolved: number; readonly candidate_failures: number; readonly harness_invalid: number; readonly judge_valid: number; readonly judge_rejections: number; readonly judge_invalid: number; readonly quality_unknown: number; readonly runtime_ms: number; readonly complete_cost_usd: number; readonly observed_cost_usd: number; readonly incomplete_cost_receipts: number };
   readonly invalidity: Readonly<Record<string, number>>; readonly steps: readonly { readonly step_id: string; readonly scoring_id: string; readonly receipts: number; readonly candidate_result: 'success' | 'failure' | 'mixed'; readonly candidate_harness: 'valid' | 'invalid' | 'mixed'; readonly judge_validity: 'valid' | 'invalid' | 'mixed'; readonly quality_verdict: 'pass' | 'fail' | 'unknown' | 'mixed' }[];
-  readonly models: readonly { readonly model: string; readonly receipts: number; readonly resolved: number; readonly harness_invalid: number; readonly judge_invalid: number; readonly runtime_ms: number; readonly complete_cost_usd: number; readonly observed_cost_usd: number }[];
-  readonly comparison: readonly { readonly step_id: string; readonly by_model: Readonly<Record<string, 'pass' | 'fail' | 'unknown'>> }[]; readonly winner: string | null }
+  readonly models: readonly { readonly model: string; readonly receipts: number; readonly resolved: number; readonly harness_invalid: number; readonly judge_invalid: number; readonly runtime_ms: number; readonly complete_cost_usd: number; readonly observed_cost_usd: number;
+    readonly resolved_steps: number; readonly judge_passes: number; readonly model_failures: number; readonly median_runtime_ms: number | null;
+    readonly candidate_cost: { readonly observed_usd: number; readonly median_usd: number | null; readonly complete: boolean };
+    readonly judge_cost: { readonly observed_usd: number; readonly median_usd: number | null; readonly complete: boolean };
+    readonly missing_session_identities: number; readonly consistency: 'consistent' | 'inconsistent' | 'not_measurable' }[];
+  readonly comparison: readonly { readonly step_id: string; readonly by_model: Readonly<Record<string, 'pass' | 'fail' | 'unknown'>> }[];
+  readonly matrix: readonly { readonly step_id: string; readonly by_model: Readonly<Record<string, { readonly works: 'yes' | 'no' | 'unknown'; readonly judge: 'pass' | 'fail' | 'invalid'; readonly candidate_cost_usd: number | null; readonly judge_cost_usd: number | null; readonly runtime_ms: number | null }>> }[];
+  readonly winner: string | null }
 export async function buildWorkflowExperimentReport(registry: ImmutableArtifactRegistry, plan: WorkflowExecutionPlan): Promise<WorkflowExperimentReport> {
   const experimentId = `workflow-${plan.plan_id.slice(7)}`; const receipts = [...await readWorkflowEvidenceReceipts(registry, experimentId)]; const effective = new Map<Hash, WorkflowJudgement>();
   for (const receipt of receipts) effective.set(receipt.receipt_hash, (await rejudgeHistory(registry, experimentId, receipt)).at(-1)?.judgement ?? receipt.judge_outcome);
@@ -293,7 +299,36 @@ export async function buildWorkflowExperimentReport(registry: ImmutableArtifactR
   const invalidity: Record<string, number> = {}; for (const receipt of receipts.filter((item) => item.harness_validity.status === 'invalid')) { const reason = receipt.harness_validity.reason ?? 'unspecified'; invalidity[reason] = (invalidity[reason] ?? 0) + 1; }
   const summarize = (items: readonly WorkflowEvidenceReceipt[]) => ({ receipts: items.length, resolved: items.filter((item) => quality(item) === 'pass').length, harness_invalid: items.filter((item) => item.harness_validity.status === 'invalid').length,
     judge_invalid: items.filter((item) => item.candidate_outcome.status === 'success' && item.harness_validity.status === 'valid' && !effective.get(item.receipt_hash)!.valid).length, runtime_ms: items.reduce((sum, item) => sum + item.runtime.runtime_ms, 0), complete_cost_usd: items.reduce((sum, item) => sum + (item.cost.completeness === 'complete' ? item.cost.usd : 0), 0), observed_cost_usd: items.reduce((sum, item) => sum + (item.cost.usd ?? 0), 0) });
-  const models = plan.models.map((model) => ({ model, ...summarize(receipts.filter((item) => item.model === model)) })); const comparison: WorkflowExperimentReport['comparison'] = plan.selected_step_ids.map((stepId) => ({ step_id: stepId, by_model: Object.fromEntries(plan.models.map((model) => { const values = receipts.filter((item) => item.step_id === stepId && item.model === model).map(quality); const result: 'pass' | 'fail' | 'unknown' = values.includes('unknown') ? 'unknown' : values.every((value) => value === 'pass') ? 'pass' : 'fail'; return [model, result]; })) }));
+  const judgeEconomics = new Map<Hash, { cost: CostEvidence; runtime_ms: number }>();
+  for (const receipt of receipts) {
+    const judgement = effective.get(receipt.receipt_hash)!;
+    if (receipt.legacy === true) continue;
+    const envelope = object(await readJson(registry, judgement.envelope_ref), 'governed judge economics') as unknown as GovernedJudgeExecutionEnvelope;
+    judgeEconomics.set(receipt.receipt_hash, { cost: CostEvidenceSchema.parse(envelope.cost), runtime_ms: envelope.runtime_ms });
+  }
+  const median = (values: readonly number[]): number | null => { if (values.length === 0) return null; const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); return sorted.length % 2 === 0 ? (sorted[middle - 1]! + sorted[middle]!) / 2 : sorted[middle]!; };
+  const models = plan.models.map((model) => {
+    const items = receipts.filter((item) => item.model === model); const base = summarize(items);
+    const candidateKnown = items.flatMap((item) => item.cost.usd === null ? [] : [item.cost.usd]);
+    const judgeKnown = items.flatMap((item) => { const value = judgeEconomics.get(item.receipt_hash)?.cost.usd; return value === null || value === undefined ? [] : [value]; });
+    const stepQualities = plan.selected_step_ids.map((step) => items.filter((item) => item.step_id === step).map(quality));
+    return { model, ...base, resolved_steps: stepQualities.filter((values) => values.length > 0 && values.every((value) => value === 'pass')).length,
+      judge_passes: items.filter((item) => effective.get(item.receipt_hash)!.valid && effective.get(item.receipt_hash)!.verdict === 'pass').length,
+      model_failures: items.filter((item) => item.harness_validity.status === 'valid' && item.candidate_outcome.status === 'failure').length,
+      median_runtime_ms: median(items.map((item) => item.runtime.runtime_ms)),
+      candidate_cost: { observed_usd: candidateKnown.reduce((sum, value) => sum + value, 0), median_usd: median(candidateKnown), complete: items.every((item) => item.cost.completeness === 'complete' || item.cost.completeness === 'not_applicable') },
+      judge_cost: { observed_usd: judgeKnown.reduce((sum, value) => sum + value, 0), median_usd: median(judgeKnown), complete: items.every((item) => { const cost = judgeEconomics.get(item.receipt_hash)?.cost; return cost !== undefined && (cost.completeness === 'complete' || cost.completeness === 'not_applicable'); }) },
+      missing_session_identities: items.filter((item) => !item.sessions.outer_session_id || item.sessions.nested_session_ids.length === 0).length,
+      consistency: plan.attempts < 2 ? 'not_measurable' as const : stepQualities.every((values) => new Set(values).size === 1) ? 'consistent' as const : 'inconsistent' as const };
+  });
+  const comparison: WorkflowExperimentReport['comparison'] = plan.selected_step_ids.map((stepId) => ({ step_id: stepId, by_model: Object.fromEntries(plan.models.map((model) => { const values = receipts.filter((item) => item.step_id === stepId && item.model === model).map(quality); const result: 'pass' | 'fail' | 'unknown' = values.includes('unknown') ? 'unknown' : values.every((value) => value === 'pass') ? 'pass' : 'fail'; return [model, result]; })) }));
+  const matrix: WorkflowExperimentReport['matrix'] = plan.selected_step_ids.map((stepId) => ({ step_id: stepId, by_model: Object.fromEntries(plan.models.map((model) => {
+    const items = receipts.filter((item) => item.step_id === stepId && item.model === model); const values = items.map(quality);
+    const works: 'yes' | 'no' | 'unknown' = values.includes('unknown') ? 'unknown' : values.every((value) => value === 'pass') ? 'yes' : 'no';
+    const judges = items.map((item) => effective.get(item.receipt_hash)!); const judge = judges.some((item) => !item.valid) ? 'invalid' : judges.every((item) => item.verdict === 'pass') ? 'pass' : 'fail';
+    const candidateCosts = items.flatMap((item) => item.cost.usd === null ? [] : [item.cost.usd]); const judgeCosts = items.flatMap((item) => { const cost = judgeEconomics.get(item.receipt_hash)?.cost.usd; return cost === null || cost === undefined ? [] : [cost]; });
+    return [model, { works, judge, candidate_cost_usd: candidateCosts.length === 0 ? null : candidateCosts.reduce((sum, value) => sum + value, 0), judge_cost_usd: judgeCosts.length === 0 ? null : judgeCosts.reduce((sum, value) => sum + value, 0), runtime_ms: items.length === 0 ? null : items.reduce((sum, item) => sum + item.runtime.runtime_ms, 0) }];
+  })) }));
   const state = <T extends string>(values: readonly T[]): T | 'mixed' => new Set(values).size === 1 ? values[0]! : 'mixed'; const steps = plan.selected_step_ids.map((stepId) => { const items = receipts.filter((item) => item.step_id === stepId); const policy = plan.policy.steps.find((item) => item.step_id === stepId)!; return { step_id: stepId, scoring_id: policy.scoring_id, receipts: items.length,
     candidate_result: state(items.map((item) => item.candidate_outcome.status)), candidate_harness: state(items.map((item) => item.harness_validity.status)), judge_validity: state(items.map((item) => effective.get(item.receipt_hash)!.valid ? 'valid' as const : 'invalid' as const)), quality_verdict: state(items.map(quality)) }; });
   const totals = { resolved: receipts.filter((item) => quality(item) === 'pass').length, candidate_failures: receipts.filter((item) => item.candidate_outcome.status === 'failure' && item.harness_validity.status === 'valid').length, harness_invalid: receipts.filter((item) => item.harness_validity.status === 'invalid').length,
@@ -302,7 +337,7 @@ export async function buildWorkflowExperimentReport(registry: ImmutableArtifactR
     runtime_ms: receipts.reduce((sum, item) => sum + item.runtime.runtime_ms, 0), complete_cost_usd: receipts.reduce((sum, item) => sum + (item.cost.completeness === 'complete' ? item.cost.usd : 0), 0), observed_cost_usd: receipts.reduce((sum, item) => sum + (item.cost.usd ?? 0), 0), incomplete_cost_receipts: receipts.filter((item) => item.cost.completeness !== 'complete').length };
   const passCounts = new Map(plan.models.map((model) => [model, comparison.filter((item) => item.by_model[model] === 'pass').length]));
   const best = Math.max(...passCounts.values()); const leaders = [...passCounts].filter(([, count]) => count === best).map(([model]) => model);
-  const core = { schema_version: WORKFLOW_REPORT_SCHEMA_VERSION, plan_id: plan.plan_id as Hash, receipt_count: receipts.length, expected_receipt_count: expected.length, totals, invalidity: Object.fromEntries(Object.entries(invalidity).sort(([a], [b]) => a.localeCompare(b))), steps, models, comparison, winner: totals.quality_unknown > 0 || leaders.length !== 1 ? null : leaders[0]! };
+  const core = { schema_version: WORKFLOW_REPORT_SCHEMA_VERSION, plan_id: plan.plan_id as Hash, receipt_count: receipts.length, expected_receipt_count: expected.length, totals, invalidity: Object.fromEntries(Object.entries(invalidity).sort(([a], [b]) => a.localeCompare(b))), steps, models, comparison, matrix, winner: totals.quality_unknown > 0 || leaders.length !== 1 ? null : leaders[0]! };
   return { ...core, report_id: canonicalHash(core) };
 }
 export async function storeWorkflowExperimentReport(registry: ImmutableArtifactRegistry, plan: WorkflowExecutionPlan): Promise<WorkflowExperimentReport> { const report = await buildWorkflowExperimentReport(registry, plan); const experimentId = `workflow-${plan.plan_id.slice(7)}`; await append(registry, experimentId, 'workflow-report', report); return report; }

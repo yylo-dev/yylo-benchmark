@@ -19,14 +19,15 @@ const plugin: BenchmarkPlugin = {
 };
 
 describe('command and plugin registration', () => {
-  it('predeclares the single writable v2 command surface', () => {
+  it('predeclares isolated v2 plus the explicit governed workflow surface', () => {
     const definitions = createCommandRegistry().definitions();
-    expect(definitions.map((item) => item.path.join(' '))).toEqual([
+    const expected = [
       'init', 'plan', 'run', 'recover', 'regrade', 'rejudge', 'doctor', 'report',
-    ]);
-    expect(definitions.filter((item) => item.available).map((item) => item.path.join(' '))).toEqual([
-      'init', 'plan', 'run', 'recover', 'regrade', 'rejudge', 'doctor', 'report',
-    ]);
+      'workflow setup', 'workflow readiness', 'workflow plan', 'workflow run', 'workflow recover',
+      'workflow rejudge', 'workflow doctor', 'workflow report', 'workflow migrate-config',
+    ];
+    expect(definitions.map((item) => item.path.join(' '))).toEqual(expected);
+    expect(definitions.filter((item) => item.available).map((item) => item.path.join(' '))).toEqual(expected);
     expect(Object.isFrozen(definitions[0])).toBe(true);
     expect(Object.isFrozen(definitions[0]?.path)).toBe(true);
   });

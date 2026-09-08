@@ -1,7 +1,7 @@
 {
   "name": "@yylo/benchmark",
   "version": "0.1.0",
-  "description": "YYLO Benchmark: flexible isolated task and workflow evaluation",
+  "description": "YYLO Benchmark: isolated evaluation and governed production workflows",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,8 +16,11 @@
   },
   "files": [
     "dist",
+    "boundary",
     "README.md",
     "scripts/verify-v2-packed-acceptance.mjs",
+    "scripts/verify-installed-boundary-acceptance.mjs",
+    "scripts/verify-convert-installed-acceptance.mjs",
     "LICENSE"
   ],
   "scripts": {

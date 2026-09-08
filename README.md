@@ -12,7 +12,12 @@
   <a href="https://github.com/yylo-dev/yylo-benchmark"><img src="https://img.shields.io/github/stars/yylo-dev/yylo-benchmark?style=social" alt="GitHub stars" /></a>
 </p>
 
-YYLO Benchmark is the flexible, isolated evaluation layer for task prompts and project-owned Workflow Runner YAML. It normalizes every case into one v2 attempt contract, runs each candidate in a private fresh-repository workspace, and evaluates retained evidence with ordered deterministic and/or LLM profiles.
+YYLO Benchmark provides two deliberately separate evaluation lanes:
+
+- **Isolated v2 (default):** task prompts and ordinary Workflow Runner YAML execute in private fresh-repository attempt workspaces.
+- **Governed workflow:** explicitly authorized production-touching workflows execute through a reviewed boundary with selected-step model overlays, typed exclusive locks, per-step envelopes, and blinded per-step judging.
+
+The governed lane does not weaken or add production authority to isolated v2.
 
 - Package: [`@yylo/benchmark`](https://www.npmjs.com/package/%40yylo%2Fbenchmark)
 - CLI: `yylo-benchmark` (also delegated unchanged by `yy benchmark`)
@@ -66,6 +71,46 @@ Supported harness kinds are `yylo_pi`, `workflow_runner`, and project-approved `
 Evaluator profiles support deterministic commands and configurable LLM judges. The immutable plan binds both the initially selected profiles and the complete evaluator catalog available for later generation-only re-evaluation. Judge configuration binds prompt, rubric, selected evidence, byte limit, blinded or visible identity, single/reference/pairwise mode, settings, repetition/aggregation, and strict JSON or legacy `VERDICT: PASS|FAIL` parsing.
 
 Keep workspace and registry roots ignored and private. The registry must be outside every candidate repository.
+
+A legacy `juno_benchmark_config.v1` file belongs to the governed-workflow lane; changing only its schema string is not a migration. Inspect configuration without mutation:
+
+```bash
+yylo-benchmark workflow migrate-config --input yylo-benchmark.config.json
+```
+
+When the input is isolated v2, pass an explicit unused `--output` path to create a governed template for review. Existing files are never overwritten.
+
+## Governed production workflows
+
+Use the explicit namespace for a tracked project workflow and policy sidecar, including paths under `.juno_task`:
+
+```bash
+yylo-benchmark --config yylo-benchmark.config.json workflow setup
+yylo-benchmark --config yylo-benchmark.config.json workflow readiness \
+  --models zai/glm-alpha,zai/glm-beta
+yylo-benchmark --config yylo-benchmark.config.json workflow plan \
+  --workflow .juno_task/workflows/daily_product_ops.yaml \
+  --steps-file .juno_task/specs/benchmark/daily-ops-policy.yaml \
+  --steps first,second,third \
+  --models zai/glm-alpha,zai/glm-beta \
+  --attempts 1 --output governed-plan.json --dry-run
+yylo-benchmark --config yylo-benchmark.config.json workflow run \
+  --plan governed-plan.json \
+  --steps-file .juno_task/specs/benchmark/daily-ops-policy.yaml --dry-run
+```
+
+Planning and dry-run report `dispatch_count: 0`. Planning preserves canonical selected-step order and expands model × attempt × selected step. It hash-binds workflow and policy bytes/semantics, variables, selected scope, compiled per-model workflow bytes, source tree, installed YYLO version, and reviewed boundary identity. The compiler injects the exact selector only at recognized `yy pi` dispatches; the trusted boundary owns exactly one `--execution-envelope` transport and reconciles requested identity against observed child evidence.
+
+Live `workflow run` requires the exact hash-pinned boundary and consumer-owned credentials. Credentials remain in child-process memory and must not be written to plans or evidence. Production resources execute under typed exclusive locks in strict plan order. Completed missing/malformed envelopes are durable harness failures; only genuinely unknown effects require manual recovery.
+
+```bash
+yylo-benchmark workflow recover --plan governed-plan.json --steps-file POLICY
+yylo-benchmark workflow rejudge --plan governed-plan.json --steps-file POLICY
+yylo-benchmark workflow doctor --plan governed-plan.json --steps-file POLICY
+yylo-benchmark workflow report --plan governed-plan.json
+```
+
+Recovery reuses retained terminals, rejudge dispatches no candidate, doctor verifies the retained chain, and report derives per-step/per-model outcomes. Paid/provider and production execution always requires separate consumer authorization; package tests use synthetic boundaries only.
 
 ## Plan
 
