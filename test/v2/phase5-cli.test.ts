@@ -275,7 +275,9 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
   it('retains bounded command-harness stderr when launch or protocol output fails', async () => {
     const root = await fixture();
     const harness = path.join(root, 'scripts', 'stderr-failure.mjs');
-    await writeFile(harness, `process.stderr.write('sandbox launch denied: '+''.padEnd(96*1024,'x'));process.exit(1);`);
+    // Exit from the write callback: process.exit() drops queued pipe bytes past
+    // the 64KiB kernel buffer, which would bypass the truncation path under test.
+    await writeFile(harness, `process.stderr.write('sandbox launch denied: '+''.padEnd(96*1024,'x'),()=>process.exit(1));`);
     const configPath = path.join(root, 'yylo-benchmark.config.json');
     const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
     config.harnesses.candidate.arguments = [harness];
