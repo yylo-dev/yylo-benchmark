@@ -225,8 +225,10 @@ describe('fT49yV terminal successor contracts', () => {
   it('Gwu1KD-A4 bounds TERM-resistant descendant trees with process-group KILL and reap', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'timeout-tree-')); const pidFile = path.join(root, 'descendant.pid');
     const script = path.join(root, 'resist.mjs');
-    await writeFile(script, `import{spawn}from'node:child_process';import{writeFileSync}from'node:fs';process.on('SIGTERM',()=>{});const c=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});writeFileSync(process.argv[2],String(c.pid));setTimeout(()=>process.exit(0),500);setInterval(()=>{},1000);`);
-    const started = Date.now(); const result = await runCapturedProcess(process.execPath, [script, pidFile], { cwd: root, environment: process.env, timeoutMs: 100, termGraceMs: 100 });
+    await writeFile(script, `import{spawn}from'node:child_process';import{writeFileSync}from'node:fs';process.on('SIGTERM',()=>{});const c=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});writeFileSync(process.argv[2],String(c.pid));setTimeout(()=>process.exit(0),5000);setInterval(()=>{},1000);`);
+    // Leave enough startup budget for a loaded release-suite host while still
+    // proving the TERM-resistant tree is force-killed well before natural exit.
+    const started = Date.now(); const result = await runCapturedProcess(process.execPath, [script, pidFile], { cwd: root, environment: process.env, timeoutMs: 1000, termGraceMs: 100 });
     expect(result.timedOut).toBe(true); expect(Date.now() - started).toBeLessThan(3000);
     const descendant = Number(await readFile(pidFile, 'utf8'));
     expect(() => process.kill(descendant, 0)).toThrow();
