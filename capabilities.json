@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 1,
+  "packageId": "yylo-benchmark",
+  "sourceVersion": "0.1.1-rc.2",
+  "evidenceDate": "2026-09-14",
+  "prerequisites": "Node.js 20.10+. Isolated subprocesses require supported POSIX process groups and provisioned filesystem sandboxing (Bubblewrap on Linux or sandbox-exec on macOS). Windows execution fails closed.",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "url": "https://registry.npmjs.org/@yylo/benchmark/-/benchmark-0.1.0.tgz",
+      "integrity": "sha512-PlaJQis5v9/wyCyXsQsIQyglAnj3Ceb8sGkCLOzxtJ/oGJHsq353+MRNGGtz54DbAJXT+5I3rDBktE0vn6dr4w==",
+      "readmeSha256": "fc167dfaeddd599a2d23de22ecb545f8b3094375fdeb840513cc710aa4f8eb00"
+    },
+    {
+      "version": "0.1.1-rc.2",
+      "url": "https://registry.npmjs.org/@yylo/benchmark/-/benchmark-0.1.1-rc.2.tgz",
+      "integrity": "sha512-XulCxkBbf9s+P9tdhFBGTYn0+H+IRMpliYLou9odNDuZgTiGGEeQ01RlUdl67CKiv9gWGviewR9vYYKyNSHbJw==",
+      "readmeSha256": "a34cc4c8ca4125577dde74b557deb3d121d7f4395c4cc287a003f54f13709005"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "configuration",
+      "title": "Configuration and cases",
+      "summary": "Compare task prompts or ordinary Workflow Runner YAML.",
+      "details": [
+        "Run init --stdout to inspect a template without dispatching or writing configuration. Replace placeholders with approved candidate/evaluator harness profiles.",
+        "Harness kinds include yylo_pi, workflow_runner and project-approved command adapters. The harness resolves providers/models; Benchmark treats model selectors as opaque.",
+        "Keep private registry state outside every candidate repository. Candidate and judge credentials remain consumer-owned."
+      ],
+      "commands": [
+        "yylo-benchmark --version\nyylo-benchmark --help\nyylo-benchmark init --stdout"
+      ],
+      "boundary": "Running a plan grants neither provider spending nor production authority.",
+      "sourceFiles": [
+        "README.md"
+      ],
+      "verifiedReleases": [
+        "0.1.0",
+        "0.1.1-rc.2"
+      ],
+      "releaseEvidence": "README sections matching this capability, inspected in the hash-bound published archive."
+    },
+    {
+      "id": "plan",
+      "title": "Immutable experiment plans",
+      "summary": "Bind cases, model selectors, attempts and evaluator configuration before execution.",
+      "details": [
+        "Task prompts and workflow YAML normalize into v2 experiment and attempt plans. Planning performs zero dispatch.",
+        "Workflow bytes are hash-bound. With controlled-model-variable the comparison is model_only; otherwise it compares agent systems."
+      ],
+      "commands": [
+        "yylo-benchmark plan --task benchmark/task.md --models vendor/model --attempts 2 --output task-plan.json\nyylo-benchmark run --plan task-plan.json --dry-run"
+      ],
+      "boundary": "Do not use legacy task IDs, spend ceilings or authorization-grant examples with v2 planning.",
+      "sourceFiles": [
+        "README.md"
+      ],
+      "verifiedReleases": [
+        "0.1.0",
+        "0.1.1-rc.2"
+      ],
+      "releaseEvidence": "README sections matching this capability, inspected in the hash-bound published archive."
+    },
+    {
+      "id": "isolation",
+      "title": "Isolated attempts",
+      "summary": "Execute candidates in private fresh repositories, not shared task worktrees.",
+      "details": [
+        "Every attempt has private home, temp, cache and configuration roots. Protected controller, registry, source and credential handles are removed from candidate environments.",
+        "Selective filesystem sandboxing denies protected roots; missing host support fails closed before dispatch. This is not a blanket container guarantee.",
+        "Post-execution manifests bind intentional edits, staging and commits. Later repository drift is rejected. POSIX timeout cleanup includes descendants and must be confirmed before terminal publication."
+      ],
+      "commands": [
+        "yylo-benchmark run --plan task-plan.json"
+      ],
+      "boundary": "A dry-run performs no dispatch; live run may contact paid providers and requires separate approval.",
+      "sourceFiles": [
+        "README.md"
+      ],
+      "verifiedReleases": [
+        "0.1.0",
+        "0.1.1-rc.2"
+      ],
+      "releaseEvidence": "README sections matching this capability, inspected in the hash-bound published archive."
+    },
+    {
+      "id": "evaluation",
+      "title": "Evaluation and re-evaluation",
+      "summary": "Keep candidate truth separate from evaluator validity.",
+      "details": [
+        "Deterministic checks and LLM judges retain prompt, rubric, profile, output and provenance. Judges can be blinded or identity-visible as configured.",
+        "Regrade/rejudge use retained evidence without rerunning the candidate. New generations append; old records remain immutable.",
+        "Required deterministic correctness or safety failures cannot be overturned by judge prose. Malformed outputs and infrastructure failures leave quality unknown."
+      ],
+      "commands": [
+        "yylo-benchmark regrade --plan task-plan.json --profile checks-v2\nyylo-benchmark rejudge --plan task-plan.json --profile judge-v2"
+      ],
+      "boundary": "Rejudging can incur judge-provider costs even though candidate dispatch is zero.",
+      "sourceFiles": [
+        "README.md"
+      ],
+      "verifiedReleases": [
+        "0.1.0",
+        "0.1.1-rc.2"
+      ],
+      "releaseEvidence": "README sections matching this capability, inspected in the hash-bound published archive."
+    },
+    {
+      "id": "recovery",
+      "title": "Recovery and verification",
+      "summary": "Reconcile exact retained evidence before considering another execution.",
+      "details": [
+        "Recover, doctor, report and re-evaluation verify plan, workspace, post-execution manifest, terminal, evidence and evaluation linkage.",
+        "An attempt without terminal state is ambiguous and remains manual; it is not blindly dispatched again. Doctor/report refuse incomplete experiments."
+      ],
+      "commands": [
+        "yylo-benchmark recover --plan task-plan.json\nyylo-benchmark doctor --plan task-plan.json"
+      ],
+      "boundary": "Retained evidence cannot be edited to manufacture successful recovery.",
+      "sourceFiles": [
+        "README.md"
+      ],
+      "verifiedReleases": [
+        "0.1.0",
+        "0.1.1-rc.2"
+      ],
+      "releaseEvidence": "README sections matching this capability, inspected in the hash-bound published archive."
+    },
+    {
+      "id": "reports",
+      "title": "Reports, runtime and cost",
+      "summary": "Report only what retained evidence establishes.",
+      "details": [
+        "Reports retain requested/resolved/observed identities, evaluation generations, validity and evidence IDs behind aggregates.",
+        "Runtime is measured wall time in milliseconds. Candidate and evaluator time/cost remain separate. Unavailable cost is unknown, never zero.",
+        "Do not pool incomparable experiments or interpret invalid infrastructure evaluations as model quality."
+      ],
+      "commands": [
+        "yylo-benchmark report --plan task-plan.json"
+      ],
+      "boundary": "Legacy v1 artifacts remain historical evidence, not current v2 scoring oracles.",
+      "sourceFiles": [
+        "README.md"
+      ],
+      "verifiedReleases": [
+        "0.1.0",
+        "0.1.1-rc.2"
+      ],
+      "releaseEvidence": "README sections matching this capability, inspected in the hash-bound published archive."
+    },
+    {
+      "id": "governed",
+      "title": "Governed production-touching workflows",
+      "summary": "Use a separate namespace and reviewed boundary for explicitly authorized production workflows.",
+      "details": [
+        "The workflow namespace restores selected-step/model overlays, typed exclusive locks, envelopes and blinded per-step judging. It does not weaken isolated v2.",
+        "Plan binds workflow, policy, selected steps, variables, source and reviewed boundary identity. Planning and dry-run report zero dispatch.",
+        "Live execution needs the exact hash-pinned boundary and consumer authorization. Credentials remain in child memory, not plans/evidence.",
+        "Legacy config belongs to this separate lane; changing only its schema string is not a migration."
+      ],
+      "commands": [
+        "yylo-benchmark workflow migrate-config --help\nyylo-benchmark workflow plan --help\nyylo-benchmark workflow run --help\nyylo-benchmark workflow recover --help"
+      ],
+      "boundary": "No implicit production or spending grant; the governing policy and boundary must be reviewed separately.",
+      "sourceFiles": [
+        "README.md"
+      ],
+      "verifiedReleases": [
+        "0.1.1-rc.2"
+      ],
+      "releaseEvidence": "README sections matching this capability, inspected in the hash-bound published archive."
+    }
+  ]
+}
