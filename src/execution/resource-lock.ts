@@ -72,7 +72,11 @@ export class PersistentTypedResourceLocks {
         await mkdir(lock, { mode: 0o700 });
         const owner: ResourceLockOwner = { schema_version: 'juno_benchmark_resource_lock.v1', resource_hash: `sha256:${hash}`, pid: process.pid,
           host: os.hostname().slice(0, 255), nonce, created_at: new Date(this.#now()).toISOString() };
-        await writeFile(path.join(lock, 'owner.json'), `${canonicalJson(owner)}\n`, { flag: 'wx', mode: 0o600 });
+        // Publish complete metadata atomically. Contenders may observe the lock
+        // directory while this write is pending, but never a partial JSON file.
+        const pendingOwner = path.join(lock, `.owner-${nonce}.json`);
+        await writeFile(pendingOwner, `${canonicalJson(owner)}\n`, { flag: 'wx', mode: 0o600 });
+        await rename(pendingOwner, path.join(lock, 'owner.json'));
         return { owner, lock };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') { await rm(lock, { recursive: true, force: true }).catch(() => undefined); throw error; }
