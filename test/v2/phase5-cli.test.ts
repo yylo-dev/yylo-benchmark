@@ -52,6 +52,50 @@ async function capture(root: string, args: string[]): Promise<Record<string, any
 }
 
 describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
+  it('validates and plan-binds optional deterministic budgets without changing omitted legacy profiles', async () => {
+    const root = await fixture(); const module = (await api())!;
+    const configPath = path.join(root, 'yylo-benchmark.config.json');
+    const config = JSON.parse(await readFile(configPath, 'utf8'));
+    const old = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'old.json']);
+    expect(old.evaluator_profiles[0]).not.toHaveProperty('timeoutMs');
+    for (const value of [0, -1, 1.5, '600000', null]) {
+      config.evaluators.checks.timeout_ms = value; await writeFile(configPath, JSON.stringify(config));
+      await expect(module.loadV2Config(root)).rejects.toThrow(/timeout_ms/u);
+    }
+    config.evaluators.checks.timeout_ms = 600000; await writeFile(configPath, JSON.stringify(config));
+    const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'new.json']);
+    expect(plan.evaluator_profiles[0].timeoutMs).toBe(600000);
+    expect(plan.plan_hash).not.toBe(old.plan_hash);
+    config.evaluators.checks.timeout_ms = 600001; await writeFile(configPath, JSON.stringify(config));
+    await expect(capture(root, ['run', '--plan', 'new.json', '--dry-run'])).rejects.toThrow(/config/u);
+  });
+
+  it('accepts a valid deterministic command beyond the legacy sixty-second ceiling', async () => {
+    const root = await fixture(); const configPath = path.join(root, 'yylo-benchmark.config.json');
+    const config = JSON.parse(await readFile(configPath, 'utf8'));
+    config.evaluators.checks.timeout_ms = 90000;
+    config.evaluators.checks.command = [process.execPath, '-e',
+      'process.stdin.resume();setTimeout(()=>process.stdout.write(JSON.stringify({passed:true,findings:[],rawOutput:"long check"})),61000)'];
+    await writeFile(configPath, JSON.stringify(config));
+    await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+    const run = await capture(root, ['run', '--plan', 'plan.json']);
+    expect(run.attempts[0].evaluation.records[0]).toMatchObject({ validity: 'valid', quality: 'resolved' });
+    expect(run.attempts[0].evaluation.records[0].runtime_ms).toBeGreaterThan(60000);
+  }, 110000);
+
+  it('uses the explicit deterministic budget and skips judges on its timeout', async () => {
+    const root = await fixture(); const configPath = path.join(root, 'yylo-benchmark.config.json');
+    const config = JSON.parse(await readFile(configPath, 'utf8'));
+    config.evaluators.checks.timeout_ms = 25;
+    config.evaluators.checks.command = [process.execPath, '-e', 'setTimeout(()=>{},1000)'];
+    await writeFile(configPath, JSON.stringify(config));
+    await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+    const run = await capture(root, ['run', '--plan', 'plan.json']);
+    expect(run.attempts[0].evaluation.records[0]).toMatchObject({ validity: 'invalid', quality: 'unknown',
+      findings: [{ message: 'deterministic evaluator timed out' }] });
+    expect(run.attempts[0].evaluation.records[1].findings[0].code).toBe('judge_not_dispatched');
+  });
+
   it('P5-A1 exposes plan/run/recover/regrade/rejudge/doctor/report with v2 help and no spend, provider, boundary, policy-sidecar, or overlay options', async () => {
     expect(await api(), 'v2 CLI module must exist').not.toBeNull();
     let help = '';

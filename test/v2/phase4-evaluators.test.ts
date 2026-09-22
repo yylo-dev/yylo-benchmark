@@ -128,7 +128,18 @@ describe('F7ZPw7 phase 4 shared configurable evaluator pipeline', () => {
     expect(failed.records[0].findings[0]).toMatchObject({ code: 'harness_failure', message: 'ENOENT judge' });
   });
 
-  it('binds the configured timeout to judge dispatch and candidate invalidity to aggregate truth', async () => {
+  it('does not dispatch a judge after required checks fail to produce evidence, regardless of profile order', async () => {
+    const api = await phase4(); const root = await runRoot(); const judge = adapter('{"verdict":"pass"}');
+    const checks = { profileId: 'checks', profileVersion: '1', generation: 1, kind: 'deterministic' as const, required: true };
+    const result = await api!.evaluateAttempt({ evidence: evidence('b', 'task'), caseKind: 'task', profiles: [jsonJudge, checks],
+      composition: { kind: 'all_required' }, deterministicEvaluators: { checks: async () => { throw new Error('packet missing'); } },
+      judgeAdapters: { 'judge-harness': judge.value }, intentRoot: root, cwd: root });
+    expect(judge.run).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ validity: 'invalid', quality: 'unknown' });
+    expect(result.records[1].findings[0].code).toBe('judge_not_dispatched');
+  });
+
+  it('skips invalid candidates by default and binds an explicit diagnostic override', async () => {
     const api = await phase4();
     expect(api).not.toBeNull();
     const judge = adapter('{"verdict":"pass"}');
@@ -137,7 +148,14 @@ describe('F7ZPw7 phase 4 shared configurable evaluator pipeline', () => {
     const root = await runRoot();
     const result = await api!.evaluateAttempt({ evidence: invalidEvidence, caseKind: 'task', profiles: [jsonJudge], composition: { kind: 'judge_only' },
       deterministicEvaluators: {}, judgeAdapters: { 'judge-harness': judge.value }, intentRoot: path.join(root, 'invalid-candidate'), cwd: root });
-    expect(judge.run).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 1000, environment: expect.objectContaining({ PATH: expect.any(String) }) }));
+    expect(judge.run).not.toHaveBeenCalled();
     expect(result).toMatchObject({ quality: 'unknown', validity: 'invalid' });
+    expect(result.records[0]).toMatchObject({ cost: { completeness: 'not_applicable', usd: null }, evaluator_session_ids: [],
+      findings: [{ code: 'judge_not_dispatched' }] });
+    const diagnostic = await api!.evaluateAttempt({ evidence: invalidEvidence, caseKind: 'task',
+      profiles: [{ ...jsonJudge, settings: { diagnostic_on_invalid: true } }], composition: { kind: 'judge_only' },
+      deterministicEvaluators: {}, judgeAdapters: { 'judge-harness': judge.value }, intentRoot: path.join(root, 'diagnostic'), cwd: root });
+    expect(judge.run).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 1000 }));
+    expect(diagnostic).toMatchObject({ quality: 'unknown', validity: 'invalid' });
   });
 });

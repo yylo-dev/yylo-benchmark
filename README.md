@@ -70,7 +70,32 @@ Supported harness kinds are `yylo_pi`, `workflow_runner`, and project-approved `
 
 Evaluator profiles support deterministic commands and configurable LLM judges. The immutable plan binds both the initially selected profiles and the complete evaluator catalog available for later generation-only re-evaluation. Judge configuration binds prompt, rubric, selected evidence, byte limit, blinded or visible identity, single/reference/pairwise mode, settings, repetition/aggregation, and strict JSON or legacy `VERDICT: PASS|FAIL` parsing.
 
+Deterministic evaluator profiles accept an optional positive integer `timeout_ms`.
+Omitting it preserves the legacy 60,000 ms budget; an explicit value is bound into
+the immutable evaluator profile and plan. Measure the complete check command,
+including setup/build, rather than inheriting the candidate or judge budget.
+For example, a reviewed long-running check profile may set `"timeout_ms": 600000`;
+this is not a universal default. Changing the budget requires a new plan.
+
+Required deterministic evaluations run before judges. Scoring judges are not
+dispatched when candidate execution is invalid/unsuccessful or a required
+non-judge evaluation is invalid. The retained `judge_not_dispatched` record has
+unknown quality, no session and not-applicable cost, rather than a model failure.
+A valid failed correctness check remains authoritative and is not an infrastructure
+failure. Explicit diagnostic judging can opt in with judge profile
+`"settings": {"diagnostic_on_invalid": true}`; this plan-bound diagnostic cannot
+make an invalid candidate valid. External packet producers must fail their required
+check when packets cannot be materialized; free-form prompt paths are not inferred
+as prerequisites by Benchmark.
+
 Keep workspace and registry roots ignored and private. The registry must be outside every candidate repository.
+Prefer disjoint source, attempt and judge roots. For supported nested trusted-host
+layouts, doctor distinguishes existing, resolved candidate-own paths in logs from
+automatic source-prefix references; explicit protected bytes, routing environment,
+Git configuration, credentials and manifest drift remain fail-closed. Missing,
+ambiguous or escaping paths receive no exemption. This is evidence classification,
+not filesystem isolation. Credential-like historical fixtures can still fail the
+scanner: inspect and disclose them rather than weakening checks or deleting evidence.
 
 A legacy `juno_benchmark_config.v1` file belongs to the governed-workflow lane; changing only its schema string is not a migration. Inspect configuration without mutation:
 
@@ -158,7 +183,13 @@ yylo-benchmark regrade --plan workflow-plan.json --profile checks-v2
 yylo-benchmark rejudge --plan workflow-plan.json --profile judge-v2
 ```
 
-Regrade and rejudge consume retained `AttemptEvidence`; they do not dispatch a candidate. The immutable plan binds the stable evaluator profile configuration; each repeated operation under that same profile ID derives and appends exactly the next generation, rejects same/non-monotonic replay, and aggregates deterministically with retained applicable records. Existing records are immutable, and historical required deterministic correctness/safety failures remain authoritative. A required deterministic correctness or safety failure cannot be overridden by judge prose. Missing or malformed deterministic protocol fields, malformed judge output, timeout, privacy failure, missing identity/session, and evaluator-harness failure produce an invalid infrastructure evaluation with unknown quality.
+Regrade and rejudge consume retained `AttemptEvidence`; they do not dispatch a candidate. The immutable plan binds the stable evaluator profile configuration; each repeated operation under that same profile ID derives and appends exactly the next generation, rejects same/non-monotonic replay, and aggregates deterministically with retained applicable records. Existing records are immutable, and historical required deterministic correctness/safety failures remain authoritative. A required deterministic correctness or safety failure cannot be overridden by judge prose.
+Re-evaluation can only select profiles already bound in the original catalog.
+If a repaired oracle or budget was not prebound, preserve the original plan and
+results and record a separately bound evaluation-only protocol using retained
+candidate evidence; do not call it a successful native regrade or rerun candidates
+implicitly. Existing doctor/report failures stay visible until independently
+verified with the selected implementation. Missing or malformed deterministic protocol fields, malformed judge output, timeout, privacy failure, missing identity/session, and evaluator-harness failure produce an invalid infrastructure evaluation with unknown quality.
 
 ## Evidence and reports
 

@@ -2,7 +2,7 @@ import { lstat, mkdtemp, readFile, readlink, rename, writeFile, mkdir, unlink, s
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildSnapshot, doctorSnapshot } from '../../src/snapshot/index.js';
+import { buildSnapshot, doctorSnapshot, captureRepositoryResult } from '../../src/snapshot/index.js';
 import { git, makeSourceRepository } from './real-git.js';
 
 async function destination(name: string): Promise<string> {
@@ -111,6 +111,32 @@ describe('exact-tree snapshot with a real Git repository', () => {
     await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest, canonicalControllerPaths: [source.root], candidateEnvironment: { SAFE_VALUE: source.root } })).rejects.toThrow(/controller reference/u);
     await writeFile(path.join(clean, 'candidate-change.txt'), 'dirty');
     await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest })).rejects.toThrow(/worktree differs/u);
+  });
+
+  it('distinguishes nested candidate-own logs from source, sibling, traversal and explicit protected references', async () => {
+    const source = await makeSourceRepository();
+    const repository = path.join(source.root, 'attempts', 'candidate');
+    await mkdir(path.dirname(repository));
+    const manifest = await buildSnapshot({ sourceRepository: source.root, baseCommit: source.commit, destination: repository,
+      excludedPaths: ['.juno_task', 'hidden-reference'] });
+    const log = path.join(repository, 'build.log');
+    await writeFile(log, `cwd="${repository}"\nfile='${repository}/run.sh'`);
+    const verify = async (extra = {}) => doctorSnapshot({ repository, manifest, sourceRepository: source.root,
+      resultManifest: await captureRepositoryResult(repository), ...extra });
+    await expect(verify()).resolves.toMatchObject({ ok: true });
+    await expect(verify({ canonicalControllerPaths: [source.root] })).rejects.toThrow(/prohibited reference/u);
+    await expect(verify({ prohibitedByteSequences: [repository] })).rejects.toThrow(/prohibited reference/u);
+    for (const leak of [source.root, `${source.root}/hidden-reference`, `${source.root}/attempts/sibling`,
+      `${repository}/../../hidden-reference`, `${repository}-suffix`, `${repository}/missing/../../../hidden-reference`]) {
+      await writeFile(log, `cwd="${repository}"\nleak="${leak}"`);
+      await expect(verify()).rejects.toThrow(/prohibited reference/u);
+    }
+    await writeFile(log, `cwd="${repository}" api_key=abcdefghijklmnop`);
+    await expect(verify()).rejects.toThrow(/credential-like/u);
+    await writeFile(log, `cwd="${repository}"`);
+    const resultManifest = await captureRepositoryResult(repository);
+    await writeFile(log, 'changed after manifest');
+    await expect(doctorSnapshot({ repository, manifest, resultManifest, sourceRepository: source.root })).rejects.toThrow(/drift/u);
   });
 
   it('refuses unsafe source paths, existing destinations and escaping symlinks', async () => {

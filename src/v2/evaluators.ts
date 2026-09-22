@@ -19,6 +19,7 @@ interface EvaluatorProfileBase {
 export interface DeterministicEvaluatorProfile extends EvaluatorProfileBase {
   readonly kind: 'deterministic';
   readonly correctnessGate?: boolean;
+  readonly timeoutMs?: number;
 }
 export interface ImportedEvaluatorProfile extends EvaluatorProfileBase { readonly kind: 'imported' | 'human' }
 export interface LlmJudgeProfile extends EvaluatorProfileBase {
@@ -94,6 +95,8 @@ interface ResolvedText { readonly text: string; readonly hash: `sha256:${string}
 
 function assertProfile(profile: EvaluatorProfile): void {
   if (!profile.profileId.trim() || !profile.profileVersion.trim() || !Number.isSafeInteger(profile.generation) || profile.generation < 1) throw new Error('evaluator profile identity is invalid');
+  if (profile.kind === 'deterministic' && profile.timeoutMs !== undefined
+      && (!Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1)) throw new Error('deterministic timeout must be a positive integer');
   if (profile.kind === 'llm_judge') {
     if (!profile.harnessProfile.trim() || !profile.requestedModel.trim() || !Number.isSafeInteger(profile.timeoutMs) || profile.timeoutMs < 1
         || !Number.isSafeInteger(profile.repetitions) || profile.repetitions < 1 || profile.repetitions > 25
@@ -372,10 +375,26 @@ export async function evaluateAttempt(options: EvaluateAttemptOptions): Promise<
     if (previous.length > 0 && profile.generation <= Math.max(...previous.map((item) => item.evaluator_generation))) throw new Error('new evaluation generation must increase monotonically');
   }
   const added: RichEvaluationRecord[] = []; const rawOutputs: Record<string, string> = {};
-  for (const profile of profiles) {
+  // Materialize deterministic prerequisites before judges, even when config lists a judge first.
+  const ordered = [...profiles.filter((item) => item.kind !== 'llm_judge'), ...profiles.filter((item) => item.kind === 'llm_judge')];
+  for (const profile of ordered) {
     let outcome: { record: RichEvaluationRecord; raw: string };
-    if (profile.kind === 'llm_judge') outcome = await judgeRecord(profile, { ...options, evidence });
-    else {
+    if (profile.kind === 'llm_judge') {
+      const invalidCandidate = evidence.candidate.validity !== 'valid' || evidence.candidate.status !== 'success';
+      const invalidPrerequisite = added.some((item) => item.required_gate && item.validity === 'invalid');
+      if ((invalidCandidate || invalidPrerequisite) && profile.settings['diagnostic_on_invalid'] !== true) {
+        const raw = invalidCandidate ? 'judge not dispatched: candidate execution is unavailable or unsuccessful'
+          : 'judge not dispatched: required deterministic evidence is invalid or unavailable';
+        const profileHash = canonicalHash(profileConfiguration(profile));
+        outcome = { raw, record: richRecord({ schema_version: 'yylo_benchmark_evaluation_record.v2', yylo_version: evidence.yylo_version,
+          attempt_id: evidence.attempt_id, evidence_hash: evidence.evidence_hash, evaluator_profile_id: profile.profileId,
+          evaluator_generation: profile.generation, evaluator_kind: 'llm_judge', validity: 'invalid', quality: 'unknown', required_gate: profile.required,
+          findings: [{ code: 'judge_not_dispatched', message: raw, severity: 'warning' }], cost: { completeness: 'not_applicable', usd: null },
+          runtime_ms: 0, provenance_hash: canonicalHash({ profile_hash: profileHash, evidence_hash: evidence.evidence_hash,
+            prerequisite_ids: added.map((item) => item.evaluation_id), reason: raw }),
+          profile_hash: profileHash, prompt_hash: null, rubric_hash: null, ...retainedOutput(raw), evaluator_session_ids: [], evaluator_identity: null }) };
+      } else outcome = await judgeRecord(profile, { ...options, evidence });
+    } else {
       const runner = options.deterministicEvaluators[profile.profileId];
       if (runner === undefined) {
         outcome = await deterministicRecord(profile, evidence, async () => { throw new Error(`evaluator implementation is unavailable: ${profile.profileId}`); });

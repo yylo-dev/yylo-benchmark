@@ -426,10 +426,30 @@ export async function doctorSnapshot(options: SnapshotDoctorOptions): Promise<Sn
     .filter((value) => value.length > 0);
   for (const needle of needles) if (Buffer.from(configText).indexOf(needle) >= 0) throw new Error('doctor: source or canonical path leaked into Git configuration');
   const visibleFiles = (await filesBelow(repository)).filter((file) => !file.startsWith(`${gitPath}${path.sep}`));
+  const explicitNeedles = [...(options.prohibitedByteSequences ?? []), ...(options.canonicalControllerPaths ?? [])]
+    .map((value) => Buffer.from(value)).filter((value) => value.length > 0);
+  const ownRoot = await realpath(repository);
   for (const file of visibleFiles) {
     const bytes = await readFile(file);
-    for (const needle of needles) if (bytes.indexOf(needle) >= 0) throw new Error(`doctor: prohibited reference bytes found in ${path.relative(repository, file)}`);
+    for (const needle of explicitNeedles) if (bytes.indexOf(needle) >= 0) throw new Error(`doctor: prohibited reference bytes found in ${path.relative(repository, file)}`);
     const text = bytes.toString('utf8');
+    // Only automatic source-prefix checks may exempt existing, resolved own paths.
+    // Explicit protected bytes and credential checks always inspect the original bytes.
+    let sourceText = text;
+    if (automaticSourceReferences.some((reference) => text.includes(reference))) {
+      const tokens = [...text.matchAll(/\/[^\s"'`<>()[\]{}\\,;]+/gu)].reverse();
+      for (const match of tokens) {
+        const token = match[0].replace(/:\d+(?::\d+)?$/u, '');
+        const lexical = path.resolve(token);
+        if (lexical !== ownRoot && !lexical.startsWith(`${ownRoot}${path.sep}`)) continue;
+        const actual = await realpath(token).catch(() => null);
+        if (actual !== ownRoot && (actual === null || !actual.startsWith(`${ownRoot}${path.sep}`))) continue;
+        sourceText = sourceText.slice(0, match.index) + '[candidate-own-path]' + sourceText.slice(match.index + match[0].length);
+      }
+    }
+    if (automaticSourceReferences.some((reference) => sourceText.includes(reference))) {
+      throw new Error(`doctor: prohibited reference bytes found in ${path.relative(repository, file)}`);
+    }
     if (CREDENTIAL_PATTERNS.some((pattern) => pattern.test(text))) throw new Error(`doctor: credential-like bytes found in ${path.relative(repository, file)}`);
   }
   for (const [name, value] of Object.entries(options.candidateEnvironment ?? {})) {
