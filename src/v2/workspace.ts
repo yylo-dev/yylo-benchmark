@@ -116,7 +116,9 @@ export async function createAttemptWorkspace(options: CreateAttemptWorkspaceOpti
   const digest = digestFromAttemptId(options.attemptId);
   const attemptsRoot = path.resolve(options.attemptsRoot);
   const registryRoot = path.resolve(options.privateRegistryRoot);
-  const protectedPaths = [...new Set([path.resolve(options.sourceRepository), registryRoot, ...(options.controllerPaths ?? []).map((item) => path.resolve(item))])];
+  const controllerPaths = [...new Set([registryRoot, ...(options.controllerPaths ?? []).map((item) => path.resolve(item))])];
+  // Environment filtering still protects source; doctor must distinguish automatic source from explicit protection.
+  const protectedPaths = [...new Set([path.resolve(options.sourceRepository), ...controllerPaths])];
   if (inside(attemptsRoot, registryRoot) || inside(registryRoot, attemptsRoot)) {
     throw new Error('private registry and attempt roots must be disjoint');
   }
@@ -175,7 +177,7 @@ export async function createAttemptWorkspace(options: CreateAttemptWorkspaceOpti
     receipt,
     snapshot,
     resultManifest: null,
-    controllerPaths: Object.freeze(protectedPaths), deniedPaths: Object.freeze([...(options.deniedPaths ?? [])]),
+    controllerPaths: Object.freeze(controllerPaths), deniedPaths: Object.freeze([...(options.deniedPaths ?? [])]),
     assertCandidateVisible(candidate: string): boolean { return inside(canonicalRepository, candidate); },
   });
 }
@@ -201,13 +203,13 @@ export async function loadAttemptWorkspace(options: Pick<CreateAttemptWorkspaceO
   const config = path.join(root, receipt.roots.config);
   const home = path.join(root, receipt.roots.home);
   const canonicalRepository = await realpath(repository);
-  const protectedPaths = [...new Set([...(options.sourceRepository === undefined ? [] : [path.resolve(options.sourceRepository)]),
-    ...(options.privateRegistryRoot === undefined ? [] : [path.resolve(options.privateRegistryRoot)]),
+  const controllerPaths = [...new Set([...(options.privateRegistryRoot === undefined ? [] : [path.resolve(options.privateRegistryRoot)]),
     ...(options.controllerPaths ?? []).map((item) => path.resolve(item))])];
+  const protectedPaths = [...new Set([...(options.sourceRepository === undefined ? [] : [path.resolve(options.sourceRepository)]), ...controllerPaths])];
   const environment = candidateEnvironment({ inherited: options.inheritedEnvironment ?? process.env, repository, temporary, cache, config, home, protectedPaths });
   return Object.freeze({ root, repository, temporaryRoot: temporary, cacheRoot: cache, configRoot: config, homeRoot: home,
     candidateEnvironment: environment, receipt: Object.freeze(receipt), snapshot: Object.freeze(snapshot),
-    resultManifest: resultManifest === null ? null : Object.freeze(resultManifest), controllerPaths: Object.freeze(protectedPaths),
+    resultManifest: resultManifest === null ? null : Object.freeze(resultManifest), controllerPaths: Object.freeze(controllerPaths),
     deniedPaths: Object.freeze([...(options.deniedPaths ?? [])]),
     assertCandidateVisible(candidate: string): boolean { return inside(canonicalRepository, candidate); } });
 }

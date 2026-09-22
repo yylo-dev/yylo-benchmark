@@ -145,12 +145,14 @@ function render(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(case_kind|rubric|evidence|reference)\}\}/gu, (_match, key: string) => values[key] ?? '');
 }
 
-function profileConfiguration(profile: EvaluatorProfile, text?: { system: ResolvedText; prompt: ResolvedText; rubric: ResolvedText }): Record<string, unknown> {
-  if (profile.kind !== 'llm_judge' || text === undefined) return { ...profile };
-  return { ...profile,
-    systemPrompt: { source: text.system.source, hash: text.system.hash },
-    promptTemplate: { source: text.prompt.source, hash: text.prompt.hash },
-    rubric: { source: text.rubric.source, hash: text.rubric.hash } };
+/** Same declared text identity for dispatched and skipped judges; skipping never reads files. */
+export function evaluatorProfileHash(profile: EvaluatorProfile): `sha256:${string}` {
+  if (profile.kind !== 'llm_judge') return canonicalHash(profile);
+  const binding = (value: TextBinding) => 'inline' in value
+    ? { source: 'inline', hash: `sha256:${sha256Hex(value.inline)}` }
+    : { source: 'file', hash: value.sha256 };
+  return canonicalHash({ ...profile, systemPrompt: binding(profile.systemPrompt),
+    promptTemplate: binding(profile.promptTemplate), rubric: binding(profile.rubric) });
 }
 
 function normalizeFindings(value: unknown): EvaluationFinding[] {
@@ -212,7 +214,7 @@ async function deterministicRecord(profile: DeterministicEvaluatorProfile | Impo
       throw new Error('deterministic evaluator output runtimeMs is malformed');
     }
     const validated = candidate as unknown as DeterministicEvaluatorResult; const raw = validated.rawOutput;
-    const profileHash = canonicalHash(profileConfiguration(profile));
+    const profileHash = evaluatorProfileHash(profile);
     return { raw, record: richRecord({ schema_version: 'yylo_benchmark_evaluation_record.v2', yylo_version: evidence.yylo_version,
       attempt_id: evidence.attempt_id, evidence_hash: evidence.evidence_hash, evaluator_profile_id: profile.profileId,
       evaluator_generation: profile.generation, evaluator_kind: profile.kind, validity: 'valid', quality: validated.passed ? 'resolved' : 'unresolved',
@@ -220,7 +222,7 @@ async function deterministicRecord(profile: DeterministicEvaluatorProfile | Impo
       runtime_ms: validated.runtimeMs ?? Math.max(0, Date.now() - started), provenance_hash: canonicalHash({ profile_hash: profileHash, evidence_hash: evidence.evidence_hash }),
       profile_hash: profileHash, prompt_hash: null, rubric_hash: null, ...retainedOutput(raw), evaluator_session_ids: [], evaluator_identity: null }) };
   } catch (error) {
-    const raw = error instanceof Error ? error.message : String(error); const profileHash = canonicalHash(profileConfiguration(profile));
+    const raw = error instanceof Error ? error.message : String(error); const profileHash = evaluatorProfileHash(profile);
     return { raw, record: richRecord({ schema_version: 'yylo_benchmark_evaluation_record.v2', yylo_version: evidence.yylo_version,
       attempt_id: evidence.attempt_id, evidence_hash: evidence.evidence_hash, evaluator_profile_id: profile.profileId,
       evaluator_generation: profile.generation, evaluator_kind: profile.kind, validity: 'invalid', quality: 'unknown', required_gate: profile.required,
@@ -253,7 +255,7 @@ function invalidJudgeRecord(profile: LlmJudgeProfile, evidence: AttemptEvidenceV
 async function judgeRecord(profile: LlmJudgeProfile, options: EvaluateAttemptOptions): Promise<{ record: RichEvaluationRecord; raw: string }> {
   const started = Date.now();
   const system = await resolveText(profile.systemPrompt); const promptTemplate = await resolveText(profile.promptTemplate); const rubric = await resolveText(profile.rubric);
-  const profileHash = canonicalHash(profileConfiguration(profile, { system, prompt: promptTemplate, rubric }));
+  const profileHash = evaluatorProfileHash(profile);
   const packet = redactEvidence(options.evidence, profile);
   const packetJson = boundedUtf8(JSON.stringify(packet), profile.maxEvidenceBytes);
   const prompt = `${system.text}\n\n${render(promptTemplate.text, { case_kind: options.caseKind, rubric: rubric.text, evidence: packetJson,
@@ -385,7 +387,7 @@ export async function evaluateAttempt(options: EvaluateAttemptOptions): Promise<
       if ((invalidCandidate || invalidPrerequisite) && profile.settings['diagnostic_on_invalid'] !== true) {
         const raw = invalidCandidate ? 'judge not dispatched: candidate execution is unavailable or unsuccessful'
           : 'judge not dispatched: required deterministic evidence is invalid or unavailable';
-        const profileHash = canonicalHash(profileConfiguration(profile));
+        const profileHash = evaluatorProfileHash(profile);
         outcome = { raw, record: richRecord({ schema_version: 'yylo_benchmark_evaluation_record.v2', yylo_version: evidence.yylo_version,
           attempt_id: evidence.attempt_id, evidence_hash: evidence.evidence_hash, evaluator_profile_id: profile.profileId,
           evaluator_generation: profile.generation, evaluator_kind: 'llm_judge', validity: 'invalid', quality: 'unknown', required_gate: profile.required,
