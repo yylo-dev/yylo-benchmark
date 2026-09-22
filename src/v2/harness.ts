@@ -2,7 +2,7 @@
 import { chmod, mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { canonicalHash, canonicalJson, type JsonValue } from '../contracts/canonical.js';
-import { CostEvidenceSchema, type CostEvidence } from '../contracts/schemas.js';
+import { CostEvidenceSchema, JunoExecutionEnvelopeV1Schema, type CostEvidence } from '../contracts/schemas.js';
 import { runCapturedProcess } from './process.js';
 
 export const HARNESS_INTENT_SCHEMA_VERSION = 'yylo_benchmark_harness_intent.v2' as const;
@@ -453,8 +453,14 @@ export class YyloPiHarnessAdapter implements HarnessAdapter {
       environment: { ...request.environment, YYLO_EXECUTION_EVIDENCE_FD: '3' }, timeoutMs: request.timeoutMs ?? this.#timeoutMs, extraPipeCount: 1,
       ...(request.deniedPaths === undefined ? {} : { deniedPaths: request.deniedPaths }) });
     const ended = new Date();
+    // Only the invocation-owned stdout envelope is identity/cost evidence.
+    // The response pipe and stderr can contain arbitrary assistant text. Accept
+    // public command/error metadata, but never interpret it as identity.
     let envelope: Record<string, unknown> = {};
-    try { envelope = JSON.parse(result.stdout.trim()) as Record<string, unknown>; } catch { /* retained as missing identity/session */ }
+    try {
+      const parsed = JunoExecutionEnvelopeV1Schema.strip().safeParse(JSON.parse(result.stdout.trim()));
+      if (parsed.success) envelope = parsed.data;
+    } catch { /* absent/incomplete envelope: keep identity and usage unknown */ }
     const cost = CostEvidenceSchema.safeParse(envelope['cost']);
     const provider = typeof envelope['provider'] === 'string' ? envelope['provider'] : null;
     const observedModel = typeof envelope['model'] === 'string' ? envelope['model'] : null;
@@ -476,7 +482,11 @@ export class YyloPiHarnessAdapter implements HarnessAdapter {
       observed_model: exactModel,
       harness_version: typeof envelope['juno_version'] === 'string' ? envelope['juno_version'] : null,
       started_at: started.toISOString(), ended_at: ended.toISOString(), runtime_ms: ended.getTime() - started.getTime(),
-      cost: cost.success ? cost.data : { completeness: 'unavailable', usd: null },
+      // Captured usage is a lower bound when the owned invocation timed out,
+      // even if it emitted a successful envelope before hanging during teardown.
+      cost: cost.success
+        ? status === 'timeout' && cost.data.usd !== null ? { completeness: 'partial', usd: cost.data.usd } : cost.data
+        : { completeness: 'unavailable', usd: null },
       process: { pid: result.pid, command: [this.#executable, ...args] }, artifacts: [],
       raw_output: result.extra[0] || result.stderr || result.stdout,
     };
