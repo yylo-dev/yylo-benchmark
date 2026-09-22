@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packageId": "yylo-benchmark",
-  "sourceVersion": "0.1.1-rc.2",
+  "sourceVersion": "0.1.2",
   "evidenceDate": "2026-09-14",
   "prerequisites": "Node.js 20.10+. Isolated subprocesses require supported POSIX process groups and provisioned filesystem sandboxing (Bubblewrap on Linux or sandbox-exec on macOS). Windows execution fails closed.",
   "releases": [
