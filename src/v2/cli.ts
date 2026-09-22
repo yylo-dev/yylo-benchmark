@@ -35,7 +35,7 @@ type HarnessConfig = CommandHarnessConfig | PiHarnessConfig | WorkflowHarnessCon
 
 interface DeterministicEvaluatorConfig {
   readonly kind: 'deterministic'; readonly profile_version: string; readonly generation: number; readonly required: boolean;
-  readonly correctness_gate?: boolean; readonly command: readonly string[];
+  readonly correctness_gate?: boolean; readonly command: readonly string[]; readonly timeout_ms?: number;
 }
 interface JudgeEvaluatorConfig {
   readonly kind: 'llm_judge'; readonly profile_version: string; readonly generation: number; readonly required: boolean;
@@ -153,7 +153,8 @@ function validateEvaluatorProfile(value: unknown, label: string): void {
       || !profile['profileVersion'].trim() || !Number.isSafeInteger(profile['generation']) || (profile['generation'] as number) < 1
       || typeof profile['required'] !== 'boolean') throw new Error(`${label} identity is invalid`);
   if (kind === 'deterministic') {
-    exactKeys(profile, [...base, 'correctnessGate'], label);
+    exactKeys(profile, [...base, 'correctnessGate', 'timeoutMs'], label);
+    if (profile['timeoutMs'] !== undefined) integer(profile['timeoutMs'], `${label}.timeoutMs`);
     if (profile['correctnessGate'] !== undefined && typeof profile['correctnessGate'] !== 'boolean') throw new Error(`${label}.correctnessGate is invalid`);
   } else if (kind === 'imported' || kind === 'human') exactKeys(profile, base, label);
   else if (kind === 'llm_judge') {
@@ -202,7 +203,8 @@ export async function loadV2Config(cwd: string, configPath?: string): Promise<{ 
   const evaluatorInput = object(root['evaluators'], 'evaluators'); const evaluators: Record<string, EvaluatorConfig> = {};
   for (const [id, raw] of Object.entries(evaluatorInput)) {
     const item = object(raw, `evaluator ${id}`); const kind = item['kind']; const common = { profile_version: string(item['profile_version'], `${id}.profile_version`), generation: integer(item['generation'], `${id}.generation`), required: item['required'] === true };
-    if (kind === 'deterministic') evaluators[id] = { kind, ...common, ...(item['correctness_gate'] === undefined ? {} : { correctness_gate: item['correctness_gate'] === true }), command: stringArray(item['command'], `${id}.command`) };
+    if (kind === 'deterministic') evaluators[id] = { kind, ...common, ...(item['correctness_gate'] === undefined ? {} : { correctness_gate: item['correctness_gate'] === true }), command: stringArray(item['command'], `${id}.command`),
+      ...(item['timeout_ms'] === undefined ? {} : { timeout_ms: integer(item['timeout_ms'], `${id}.timeout_ms`) }) };
     else if (kind === 'llm_judge') {
       if (!['blinded', 'visible'].includes(String(item['identity_visibility'])) || !['single', 'reference', 'pairwise'].includes(String(item['mode']))
           || !['majority', 'all', 'any'].includes(String(item['aggregation'])) || !['strict_json', 'legacy_verdict'].includes(String(item['parser']))) throw new Error(`judge evaluator enum is invalid: ${id}`);
@@ -236,7 +238,8 @@ function evaluatorProfileHash(profile: EvaluatorProfile): `sha256:${string}` {
 
 function evaluatorProfile(id: string, value: EvaluatorConfig): EvaluatorProfile {
   if (value.kind === 'deterministic') return { profileId: id, profileVersion: value.profile_version, generation: value.generation, kind: 'deterministic', required: value.required,
-    ...(value.correctness_gate === undefined ? {} : { correctnessGate: value.correctness_gate }) };
+    ...(value.correctness_gate === undefined ? {} : { correctnessGate: value.correctness_gate }),
+    ...(value.timeout_ms === undefined ? {} : { timeoutMs: value.timeout_ms }) };
   return { profileId: id, profileVersion: value.profile_version, generation: value.generation, kind: 'llm_judge', required: value.required,
     harnessProfile: value.harness_profile, requestedModel: value.requested_model, systemPrompt: { inline: value.system_prompt }, promptTemplate: { inline: value.prompt_template }, rubric: { inline: value.rubric },
     evidenceFields: value.evidence_fields, maxEvidenceBytes: value.max_evidence_bytes, identityVisibility: value.identity_visibility, mode: value.mode,
@@ -416,7 +419,7 @@ async function captured(executable: string, args: readonly string[], cwd: string
 function deterministicRunner(config: DeterministicEvaluatorConfig, cwd: string): DeterministicEvaluator {
   return async (evidence) => {
     const [executable, ...args] = config.command; if (executable === undefined) throw new Error('deterministic evaluator command is empty');
-    const result = await captured(executable, args, cwd, { ...process.env }, 60_000, canonicalJson(evidence));
+    const result = await captured(executable, args, cwd, { ...process.env }, config.timeout_ms ?? 60_000, canonicalJson(evidence));
     if (result.timedOut) throw new Error('deterministic evaluator timed out');
     if (result.code !== 0) throw new Error(`deterministic evaluator exited ${result.code ?? result.signal}`);
     const parsed = object(JSON.parse(result.stdout) as unknown, 'deterministic evaluator output');
