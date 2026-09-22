@@ -23,6 +23,10 @@ The governed lane does not weaken or add production authority to isolated v2.
 - CLI: `yylo-benchmark` (also delegated unchanged by `yy benchmark`)
 - Source: [yylo-dev/yylo-benchmark](https://github.com/yylo-dev/yylo-benchmark)
 
+## From the experiment log
+
+[Ten CLI tasks, forty attempts: what our benchmark actually taught us](https://yylo.dev/blog/ten-task-cli-benchmark) covers our four-model, ten-task exploratory study: methodology, corrected results, cost coverage, and lessons from auditing the evaluator itself. It is **not a model ranking**: native integrity failures, changed prompt delivery, and unresolved evaluation uncertainty limit the findings.
+
 ## Boundaries
 
 Benchmark owns case normalization, attempt isolation, retained evidence, evaluator provenance, recovery, doctor, and reports. The selected harness owns command/workflow interpretation, provider and model resolution, and process/session execution.
