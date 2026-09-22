@@ -58,6 +58,30 @@ describe('fSC4KN phase 2 isolated workspace and provider-agnostic harness', () =
     await expect(api!.doctorAttemptWorkspace(first, { sourceRepository: source.root })).resolves.toMatchObject({ ok: true });
   });
 
+  it('keeps nested own paths separate from explicit protection on creation and reload', async () => {
+    const api = (await phase2())!; const source = await makeSourceRepository();
+    const options = { attemptId: `sha256:${'a'.repeat(64)}` as const, sourceRepository: source.root,
+      baseCommit: source.commit, attemptsRoot: path.join(source.root, 'attempts'),
+      privateRegistryRoot: path.join(source.root, 'registry'), excludedPaths: ['.juno_task', 'hidden-reference'],
+      inheritedEnvironment: { SOURCE_HINT: source.root, PATH: '/usr/bin:/bin' } };
+    const workspace = await api.createAttemptWorkspace(options);
+    expect(workspace.candidateEnvironment.SOURCE_HINT).toBeUndefined();
+    const log = path.join(workspace.repository, 'own.log');
+    await writeFile(log, `own path: ${workspace.repository}\n`);
+    const result = await api.publishAttemptWorkspaceResult(workspace);
+    await expect(api.doctorAttemptWorkspace({ ...workspace, resultManifest: result }, { sourceRepository: source.root })).resolves.toMatchObject({ ok: true });
+    const loaded = await api.loadAttemptWorkspace(options);
+    await expect(api.doctorAttemptWorkspace(loaded, { sourceRepository: source.root })).resolves.toMatchObject({ ok: true });
+    const explicit = await api.loadAttemptWorkspace({ ...options, controllerPaths: [source.root] });
+    await expect(api.doctorAttemptWorkspace(explicit, { sourceRepository: source.root })).rejects.toThrow(/prohibited reference/u);
+    for (const text of [source.root, options.privateRegistryRoot, `${workspace.repository}/../../outside`, 'api_key=abcdefghijklmnop']) {
+      await writeFile(log, text);
+      const { captureRepositoryResult } = await import('../../src/snapshot/index.js');
+      const resultManifest = await captureRepositoryResult(workspace.repository);
+      await expect(api.doctorAttemptWorkspace({ ...loaded, resultManifest }, { sourceRepository: source.root })).rejects.toThrow(/prohibited reference|credential-like/u);
+    }
+  });
+
   it('P2-A2 preserves historical Git isolation from future objects, refs, remotes, alternates, worktree links, and controller routing', async () => {
     const api = await phase2();
     expect(api, 'v2 workspace and harness modules must exist').not.toBeNull();
