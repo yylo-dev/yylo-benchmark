@@ -180,6 +180,8 @@ Intent is durable before candidate or judge dispatch. After candidate execution 
 
 Candidate and evaluator subprocesses run in isolated POSIX process groups. A timeout records measured wall time only after bounded `TERM` grace, process-group `KILL`, direct-child close/reap, and confirmed process-group disappearance within an explicit cleanup bound, including when descendants ignore `SIGTERM`. Failure to confirm cleanup fails closed rather than publishing terminal timeout truth. Windows is rejected before dispatch because this package does not provide an equivalent job-object/tree-termination guarantee.
 
+The YYLO Pi adapter retains identity and usage only from a schema-valid public envelope already captured on that invocation's stdout. On timeout, a captured numeric cost is `partial`, never final billing. Missing, truncated, or malformed envelopes leave identity and cost unknown; response text and shared Pi session directories are not telemetry sources. The current YYLO evidence pipe is terminal response text, not an incremental identity/usage feed, so most pre-envelope timeouts still have unknown usage. Intent hashes bind the cwd, invocation, and requested selector; terminal hashes bind retained observations. A valid receipt does not make a timed-out candidate successful or eligible for scoring judges.
+
 ## Re-evaluation
 
 ```bash
