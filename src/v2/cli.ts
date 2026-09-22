@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { canonicalHash, canonicalJson, sha256Hex, type JsonValue } from '../contracts/canonical.js';
 import { caseInvocation, compileTaskAttempt, compileWorkflowAttempt, evidenceFromTerminal, executeCaseAttempt, nonModelInputHash, recoverCaseAttempt } from './adapters.js';
-import { evaluateAttempt, reevaluateAttempt, type DeterministicEvaluator, type EvaluationComposition, type EvaluatorProfile, type RichEvaluationRecord } from './evaluators.js';
+import { evaluateAttempt, evaluatorProfileHash, reevaluateAttempt, type DeterministicEvaluator, type EvaluationComposition, type EvaluatorProfile, type RichEvaluationRecord } from './evaluators.js';
 import { loadHarnessTerminalForVerification, withMeasuredProcessFailure, YyloPiHarnessAdapter, type HarnessAdapter, type HarnessRequest, type HarnessReconcileResult, type HarnessTerminalInput } from './harness.js';
 import { AttemptEvidenceV2Schema, AttemptPlanV2Schema, EvaluationRecordV2Schema, ReportProvenanceV2Schema, ReportV2Schema, serializeV2, type AttemptEvidenceV2, type AttemptPlanV2 } from './contracts.js';
 import { WorkflowRunnerHarnessAdapter } from './adapters.js';
@@ -226,14 +226,6 @@ export async function loadV2Config(cwd: string, configPath?: string): Promise<{ 
   if (config.harnesses[config.default_candidate_harness] === undefined) throw new Error('default candidate harness is unavailable');
   for (const id of config.default_evaluators) if (config.evaluators[id] === undefined) throw new Error(`default evaluator is unavailable: ${id}`);
   return { config: Object.freeze(config), path: pathname, hash: `sha256:${sha256Hex(bytes)}` };
-}
-
-function evaluatorProfileHash(profile: EvaluatorProfile): `sha256:${string}` {
-  if (profile.kind !== 'llm_judge') return canonicalHash(profile);
-  const binding = (value: typeof profile.systemPrompt) => 'inline' in value
-    ? { source: 'inline', hash: `sha256:${sha256Hex(value.inline)}` }
-    : { source: 'file', hash: value.sha256 };
-  return canonicalHash({ ...profile, systemPrompt: binding(profile.systemPrompt), promptTemplate: binding(profile.promptTemplate), rubric: binding(profile.rubric) });
 }
 
 function evaluatorProfile(id: string, value: EvaluatorConfig): EvaluatorProfile {

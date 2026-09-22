@@ -94,7 +94,43 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     expect(run.attempts[0].evaluation.records[0]).toMatchObject({ validity: 'invalid', quality: 'unknown',
       findings: [{ message: 'deterministic evaluator timed out' }] });
     expect(run.attempts[0].evaluation.records[1].findings[0].code).toBe('judge_not_dispatched');
+    expect(await capture(root, ['doctor', '--plan', 'plan.json'])).toMatchObject({ ok: true });
+    expect(await capture(root, ['report', '--plan', 'plan.json'])).toMatchObject({ unknown_quality: 1 });
   });
+
+  it.each(['success', 'timeout', 'invalid', 'code-failure', 'diagnostic'])(
+    'verifies native own-log and evaluation linkage for %s without accepting tampered profiles', async (mode) => {
+      const root = await fixture(); const configPath = path.join(root, 'yylo-benchmark.config.json');
+      const config = JSON.parse(await readFile(configPath, 'utf8'));
+      const harness = path.join(root, 'scripts', 'harness.mjs');
+      const original = await readFile(harness, 'utf8');
+      const status = mode === 'timeout' || mode === 'diagnostic' ? 'timeout' : mode === 'invalid' ? 'invalid' : 'success';
+      await writeFile(harness, `import {writeFileSync} from 'node:fs';\n` + original
+        .replace("status:'success'", `status:judge?'success':'${status}'`)
+        .replace('process.stdout.write(', `if(!judge)writeFileSync('own.log',process.cwd());process.stdout.write(`));
+      if (mode === 'code-failure') config.evaluators.checks.command = [process.execPath, '-e',
+        'process.stdin.resume();process.stdin.on("end",()=>console.log(JSON.stringify({passed:false,findings:[],rawOutput:"code failed"})))'];
+      if (mode === 'diagnostic') config.evaluators['judge-v1'].settings.diagnostic_on_invalid = true;
+      await writeFile(configPath, JSON.stringify(config));
+      const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+      const run = await capture(root, ['run', '--plan', 'plan.json']);
+      const judge = run.attempts[0].evaluation.records[1];
+      if (mode === 'timeout' || mode === 'invalid') expect(judge).toMatchObject({ quality: 'unknown', evaluator_session_ids: [],
+        cost: { completeness: 'not_applicable', usd: null }, findings: [{ code: 'judge_not_dispatched' }] });
+      else expect(judge.evaluator_session_ids).toHaveLength(1);
+      expect(await capture(root, ['doctor', '--plan', 'plan.json'])).toMatchObject({ ok: true });
+      const report = await capture(root, ['report', '--plan', 'plan.json']);
+      expect(report.evidence_count).toBe(1);
+      if (mode === 'timeout' || mode === 'invalid') expect(report.unknown_quality).toBe(1);
+      const stateFile = path.join(root, '.benchmark', 'registry', 'v2', 'runs', plan.experiment_id.slice(7), `${plan.attempts[0].attempt_id.slice(7)}.json`);
+      const state = JSON.parse(await readFile(stateFile, 'utf8'));
+      const { evaluation_id: _id, ...recordCore } = state.evaluation_records[1];
+      recordCore.profile_hash = `sha256:${'0'.repeat(64)}`;
+      state.evaluation_records[1] = { ...recordCore, evaluation_id: canonicalHash(recordCore) };
+      const { state_hash: _hash, ...stateCore } = state;
+      await writeFile(stateFile, JSON.stringify({ ...stateCore, state_hash: canonicalHash(stateCore) }));
+      await expect(capture(root, ['doctor', '--plan', 'plan.json'])).rejects.toThrow(/profile_hash/u);
+    });
 
   it('P5-A1 exposes plan/run/recover/regrade/rejudge/doctor/report with v2 help and no spend, provider, boundary, policy-sidecar, or overlay options', async () => {
     expect(await api(), 'v2 CLI module must exist').not.toBeNull();
