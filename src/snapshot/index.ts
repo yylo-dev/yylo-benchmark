@@ -353,8 +353,23 @@ const CREDENTIAL_PATTERNS = [
   /\bAKIA[0-9A-Z]{16}\b/u,
   /\bgh[opsu]_[A-Za-z0-9]{30,}\b/u,
   /https?:\/\/[^\s/:]+:[^\s/@]+@/u,
-  /(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*['"]?[A-Za-z0-9_\-/.+=]{12,}/iu,
 ];
+
+function hasCredentialLikeBytes(text: string): boolean {
+  if (CREDENTIAL_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  // A bare Python environment lookup is an expression, not credential bytes.
+  // Recognize only a complete assignment with no nonempty fallback. Never exempt
+  // an entire file/line: other matches (including comments) still fail closed.
+  const lookup = /^[ \t]*[A-Za-z_]\w*[ \t]*=[ \t]*os\.environ\.get\([ \t]*(["'])[A-Za-z_]\w*\1[ \t]*(?:,[ \t]*(["'])\2[ \t]*)?\)[ \t]*(?:#.*)?\r?$/u;
+  const assignments = /(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*['"]?[A-Za-z0-9_\-/.+=]{12,}/giu;
+  for (const match of text.matchAll(assignments)) {
+    const start = text.lastIndexOf('\n', match.index) + 1;
+    const end = text.indexOf('\n', match.index);
+    const line = text.slice(start, end === -1 ? text.length : end);
+    if (match.index >= start + line.indexOf('=') || !lookup.test(line)) return true;
+  }
+  return false;
+}
 const ROUTING_ENV = /^(?:(?:YYLO_BENCHMARK_|JUNO_BENCHMARK_).*|JUNO_TASK_ROOT|JUNO_CONTROLLER_ROOT|JUNO_CANONICAL_CONTROLLER|(?:YYLO_LEDGER_|JUNO_KANBAN_)(?:ROOT|CONFIG|COMMAND)|GIT_(?:DIR|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES))$/u;
 const CREDENTIAL_ENV = /(?:(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTHORIZATION|COOKIE)$|^(?:GIT|SSH)_ASKPASS$|^SSH_AUTH_SOCK$|^AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|SECURITY_TOKEN|PROFILE|DEFAULT_PROFILE|WEB_IDENTITY_TOKEN_FILE|SHARED_CREDENTIALS_FILE|CONFIG_FILE|CONTAINER_CREDENTIALS_(?:RELATIVE|FULL)_URI|CONTAINER_AUTHORIZATION_TOKEN_FILE)$|^GOOGLE_APPLICATION_CREDENTIALS$|^AZURE_(?:CLIENT_ID|CLIENT_SECRET|CLIENT_CERTIFICATE_PATH|TENANT_ID|USERNAME|PASSWORD)$)/iu;
 
@@ -450,7 +465,7 @@ export async function doctorSnapshot(options: SnapshotDoctorOptions): Promise<Sn
     if (automaticSourceReferences.some((reference) => sourceText.includes(reference))) {
       throw new Error(`doctor: prohibited reference bytes found in ${path.relative(repository, file)}`);
     }
-    if (CREDENTIAL_PATTERNS.some((pattern) => pattern.test(text))) throw new Error(`doctor: credential-like bytes found in ${path.relative(repository, file)}`);
+    if (hasCredentialLikeBytes(text)) throw new Error(`doctor: credential-like bytes found in ${path.relative(repository, file)}`);
   }
   for (const [name, value] of Object.entries(options.candidateEnvironment ?? {})) {
     if (value === undefined) continue;

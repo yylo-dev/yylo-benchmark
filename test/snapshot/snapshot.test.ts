@@ -113,6 +113,38 @@ describe('exact-tree snapshot with a real Git repository', () => {
     await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest })).rejects.toThrow(/worktree differs/u);
   });
 
+  it('classifies environment lookups without exempting literal credentials or the rest of a line', async () => {
+    const source = await makeSourceRepository();
+    const repository = await destination('environment-expression');
+    const manifest = await buildSnapshot({ sourceRepository: source.root, baseCommit: source.commit, destination: repository,
+      excludedPaths: ['.juno_task', 'hidden-reference'] });
+    const file = path.join(repository, 'source.py');
+    const verify = async () => doctorSnapshot({ repository, manifest, resultManifest: await captureRepositoryResult(repository) });
+    for (const text of [
+      '        api_key = os.environ.get("GEMINI_API_KEY", "")',
+      "access_token = os.environ.get('ACCESS_TOKEN')",
+      "password = os.environ.get('PASSWORD', '') # read at runtime",
+    ]) {
+      await writeFile(file, text);
+      await expect(verify(), text).resolves.toMatchObject({ ok: true });
+    }
+    for (const text of [
+      'api_key=abcdefghijklmnop', 'api_key="abcdefghijklmnop"',
+      'api_key="os.environ.get"', 'api_key=os.environ.getevil',
+      'api_key = os.environ.get("KEY", "abcdefghijklmnop")',
+      'api_key = os.environ.get("KEY") or "abcdefghijklmnop"',
+      'api_key = os.environ.get("KEY"); password=abcdefghijklmnop',
+      'api_key = os.environ.get("KEY") # password=abcdefghijklmnop',
+      '"api_key = os.environ.get(\'KEY\')"',
+      'api_key = os.environ.get("KEY")\n-----BEGIN PRIVATE KEY-----',
+      'api_key = os.environ.get("KEY")\n' + 'ghp_' + 'a'.repeat(30),
+      'api_key = os.environ.get("KEY")\nhttps://user:abcdefghijklmnop@example.invalid',
+    ]) {
+      await writeFile(file, text);
+      await expect(verify(), text).rejects.toThrow(/credential-like/u);
+    }
+  });
+
   it('distinguishes nested candidate-own logs from source, sibling, traversal and explicit protected references', async () => {
     const source = await makeSourceRepository();
     const repository = path.join(source.root, 'attempts', 'candidate');
