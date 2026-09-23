@@ -1,33 +1,21 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { chmod, mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-
-const exec = promisify(execFile);
-
-export async function git(repository: string, ...args: string[]): Promise<string> {
-  const result = await exec('git', ['-C', repository, ...args], {
-    encoding: 'utf8',
-    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', LC_ALL: 'C' },
-  });
-  return result.stdout.trim();
+import { git, prepareCase } from '../../src/v2/workspace.js';
+import { TreatmentSchema } from '../../src/v2/contracts.js';
+export async function fixture(workflow?: string) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'benchmark-test-')); const source = path.join(root, 'source'); await mkdir(source);
+  await git(source, ['init', '--quiet']); await git(source, ['config', 'user.name', 'Test']); await git(source, ['config', 'user.email', 'test@localhost']);
+  await writeFile(path.join(source, 'code.txt'), 'baseline\n'); await writeFile(path.join(source, '.gitignore'), 'node_modules/\n');
+  await mkdir(path.join(source, '.juno_task', 'scripts'), { recursive: true }); await writeFile(path.join(source, '.juno_task', 'answer.txt'), 'hidden answer');
+  await writeFile(path.join(source, '.juno_task', 'scripts', 'source.py'), 'print("source")');
+  if (workflow) await writeFile(path.join(source, 'workflow.yaml'), workflow);
+  await git(source, ['add', '.']); await git(source, ['commit', '--quiet', '-m', 'base']); const base = (await git(source, ['rev-parse', 'HEAD'])).toString().trim();
+  await writeFile(path.join(source, 'solution.txt'), 'future answer'); await git(source, ['add', '.']); await git(source, ['commit', '--quiet', '-m', 'solution']);
+  const reference = (await git(source, ['rev-parse', 'HEAD'])).toString().trim(); const caseDirectory = path.join(root, 'case');
+  await prepareCase({ source, base, reference, prompt: 'Implement behavior without looking at the answer.', output: caseDirectory, reviewed: true, ...(workflow ? { workflow: 'workflow.yaml' } : {}) });
+  return { root, source, base, reference, caseDirectory };
 }
-
-export async function makeSourceRepository(): Promise<{ root: string; commit: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-source-'));
-  await git(root, 'init', '--quiet', '--initial-branch', 'main');
-  await git(root, 'config', 'user.name', 'Fixture');
-  await git(root, 'config', 'user.email', 'fixture@example.invalid');
-  await writeFile(path.join(root, 'plain.txt'), Buffer.from([0, 1, 2, 10, 255]));
-  await writeFile(path.join(root, 'run.sh'), '#!/bin/sh\necho exact\n');
-  await chmod(path.join(root, 'run.sh'), 0o755);
-  await symlink('plain.txt', path.join(root, 'plain-link'));
-  await mkdir(path.join(root, '.juno_task'), { recursive: true });
-  await writeFile(path.join(root, '.juno_task', 'canonical-only.txt'), 'must be excluded');
-  await mkdir(path.join(root, 'hidden-reference'), { recursive: true });
-  await writeFile(path.join(root, 'hidden-reference', 'solution.patch'), 'future answer');
-  await git(root, 'add', '--all');
-  await git(root, 'commit', '--quiet', '-m', 'base');
-  return { root, commit: await git(root, 'rev-parse', 'HEAD') };
+export function command(script: string, name = 'candidate') {
+  return TreatmentSchema.parse({ name, model: 'test/model', harness: 'command', executable: process.execPath, args: ['-e', script], timeout_ms: 5000 });
 }

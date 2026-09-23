@@ -1,125 +1,70 @@
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { afterEach, describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
-import { git } from '../snapshot/real-git.js';
-import { deriveCandidateManifest } from '../../src/snapshot/index.js';
+import { stringify } from 'yaml';
+import { fixture, command } from '../snapshot/real-git.js';
+import { runAttempt } from '../../src/v2/adapters.js';
+import { invoke } from '../../src/v2/harness.js';
+import { TreatmentSchema } from '../../src/v2/contracts.js';
+const workflowSetup = { executable: 'python3', args: ['-c', "import os,sys,subprocess; os.mkdir('.juno_task'); subprocess.run([sys.executable,'-m','venv','--without-pip','.venv_juno'],check=True); open('.gitignore','a').write('\\n.venv_juno/\\n.juno_task/\\n')"] };
+const roots: string[] = []; afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
-async function phase3() {
-  return import('../../src/v2/adapters.js').catch(() => null);
-}
-
-async function sourceRepository() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'yylo-benchmark-v2-adapter-source-'));
-  await git(root, 'init', '--quiet', '--initial-branch', 'main');
-  await git(root, 'config', 'user.name', 'Fixture');
-  await git(root, 'config', 'user.email', 'fixture@example.invalid');
-  await mkdir(path.join(root, 'workflows'));
-  const workflow = `name: formerly-forbidden\nworking_directory: nested\nenvironment:\n  SAFE: value\nsteps:\n  - id: arbitrary\n    cwd: nested\n    env: { LOCAL: yes }\n    executable: node\n    argv: [node, script.mjs]\n  - id: managed\n    managed_agent: { prompt: do-work }\nconfiguration:\n  candidate: "{{ candidate_model }}"\n`;
-  await writeFile(path.join(root, 'workflows', 'flexible.yaml'), workflow);
-  await writeFile(path.join(root, 'task.txt'), 'repair the fixture');
-  await git(root, 'add', '--all');
-  await git(root, 'commit', '--quiet', '-m', 'fixture');
-  const commit = await git(root, 'rev-parse', 'HEAD');
-  const manifest = await deriveCandidateManifest({ sourceRepository: root, baseCommit: commit,
-    excludedPaths: ['.juno_task', 'hidden-graders', 'reference-solutions'] });
-  return { root, commit, workflow, candidateManifestHash: manifest.manifest_hash };
-}
-
-const evaluator = { profile_id: 'shared', profile_version: '1', generation: 1, kind: 'deterministic' as const, required: true, config_hash: `sha256:${'a'.repeat(64)}` };
-
-function successfulTerminal(selector: string) {
-  return {
-    status: 'success' as const, exit_code: 0, signal: null, session_id: 'session-1',
-    resolved_provider: 'arbitrary-provider', resolved_model: selector,
-    observed_provider: 'arbitrary-provider', observed_model: selector, harness_version: 'fake-1',
-    started_at: '2026-01-01T00:00:00.000Z', ended_at: '2026-01-01T00:00:01.000Z', runtime_ms: 1000,
-    cost: { completeness: 'not_applicable' as const, usd: null }, process: { pid: 1, command: ['fake'] }, artifacts: [], raw_output: 'candidate verified output',
-  };
-}
-
-describe('uUcc9l phase 3 unified task and Workflow Runner adapters', () => {
-  it('P3-A1 compiles task and workflow cases into the same AttemptPlan and AttemptEvidence contracts', async () => {
-    const api = await phase3();
-    expect(api, 'v2 task/workflow adapter module must exist').not.toBeNull();
-    const source = await sourceRepository();
-    const common = { sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree: await git(source.root, 'rev-parse', 'HEAD^{tree}'), candidate_manifest_hash: source.candidateManifestHash }, experimentId: 'exp', attemptIndex: 1, harnessProfile: 'fake', requestedModel: 'provider/model', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2' };
-    const task = await api!.compileTaskAttempt({ ...common, taskId: 'task-1', taskVersion: '1', prompt: 'repair' });
-    const workflow = await api!.compileWorkflowAttempt({ ...common, workflowId: 'flow-1', workflowVersion: '1', workflowPath: 'workflows/flexible.yaml', variables: { candidate_model: 'provider/model' }, controlledModelVariable: 'candidate_model' });
-    expect(task.schema_version).toBe(workflow.schema_version);
-    expect(Object.keys(task).sort()).toEqual(Object.keys(workflow).sort());
-
-    const run = async (plan: typeof task, suffix: string) => {
-      const root = await mkdtemp(path.join(os.tmpdir(), `phase3-${suffix}-`));
-      const adapter = { profileId: 'fake', version: '1', probe: async () => ({ ready: true as const }), prepare: async () => ({ prepared: true as const }), run: async () => successfulTerminal(plan.requested_model), reconcile: async () => ({ state: 'ambiguous' as const, reason: 'unknown' }) };
-      return api!.executeCaseAttempt({ plan, sourceRepository: source.root, attemptsRoot: path.join(root, 'attempts'), privateRegistryRoot: path.join(root, 'registry'), intentRoot: path.join(root, 'intents'), adapter });
-    };
-    const taskResult = await run(task, 'task');
-    const workflowResult = await run(workflow, 'workflow');
-    expect(taskResult.evidence.schema_version).toBe(workflowResult.evidence.schema_version);
-    expect(Object.keys(taskResult.evidence).sort()).toEqual(Object.keys(workflowResult.evidence).sort());
-    expect(taskResult.evidence.candidate.output).toBe('candidate verified output');
+describe('native adapter boundaries', () => {
+  it('passes literal prompt/model and private session arguments to YYLO and retains its envelope', async () => {
+    const f = await fixture(); roots.push(f.root); const fake = path.join(f.root, 'fake-yy');
+    await writeFile(fake, `#!/usr/bin/env node
+const fs=require('fs');const args=process.argv.slice(2);fs.writeFileSync('observed.json',JSON.stringify({args,prompt:fs.readFileSync(args[args.indexOf('--prompt-file')+1],'utf8')}));
+fs.writeSync(3,'{"verdict":"pass","findings":[]}');console.log(JSON.stringify({status:'success',model:'resolved',provider:'provider',session_id:'session-1',cost:{usd:0.2}}));`, { mode: 0o755 });
+    const result = await runAttempt({ caseDirectory: f.caseDirectory, output: path.join(f.root, 'attempt'), treatment: TreatmentSchema.parse({ name: 'pi', model: ':alias', harness: 'yylo_pi', executable: fake, args: ['--thinking', 'medium'] }) });
+    expect(result.execution.status).toBe('completed'); expect(result.execution.observed_model).toBe('provider/resolved'); expect(result.execution.cost_usd).toBe(0.2);
+    const observed = JSON.parse(await readFile(path.join(f.root, 'attempt', 'output', 'observed.json'), 'utf8'));
+    expect(observed.args.slice(0, 4)).toEqual(['--execution-envelope', 'pi', '--model', ':alias']);
+    expect(observed.args).toContain('--additional-args'); expect(observed.prompt).toContain('Implement behavior');
   });
-
-  it('P3-A2 passes formerly forbidden Workflow Runner YAML through byte-for-byte without admission or rewriting', async () => {
-    const api = await phase3();
-    expect(api, 'v2 task/workflow adapter module must exist').not.toBeNull();
-    const source = await sourceRepository();
-    const tree = await git(source.root, 'rev-parse', 'HEAD^{tree}');
-    const plan = await api!.compileWorkflowAttempt({ sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree, candidate_manifest_hash: source.candidateManifestHash }, experimentId: 'flow-exp', attemptIndex: 1, harnessProfile: 'workflow-runner', requestedModel: 'provider/model', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', workflowId: 'flow', workflowVersion: '1', workflowPath: 'workflows/flexible.yaml', variables: { candidate_model: 'provider/model' }, controlledModelVariable: 'candidate_model' });
-    const root = await mkdtemp(path.join(os.tmpdir(), 'phase3-flow-run-'));
-    let observed: { cwd: string; bytes: string; invocation: unknown } | undefined;
-    const adapter = { profileId: 'workflow-runner', version: '1', probe: async () => ({ ready: true as const }), prepare: async () => ({ prepared: true as const }), run: async (request: { cwd: string; invocation?: unknown }) => { observed = { cwd: request.cwd, bytes: await readFile(path.join(request.cwd, 'workflows/flexible.yaml'), 'utf8'), invocation: request.invocation }; return successfulTerminal('provider/model'); }, reconcile: async () => ({ state: 'ambiguous' as const, reason: 'unknown' }) };
-    const result = await api!.executeCaseAttempt({ plan, sourceRepository: source.root, attemptsRoot: path.join(root, 'attempts'), privateRegistryRoot: path.join(root, 'registry'), intentRoot: path.join(root, 'intents'), adapter });
-    expect(observed!.bytes).toBe(source.workflow);
-    expect(observed!.cwd).toBe(result.workspace.repository);
-    expect(observed!.invocation).toMatchObject({ kind: 'workflow', workflow_path: 'workflows/flexible.yaml', variables: { candidate_model: 'provider/model' } });
-    expect(observed!.bytes).toContain('managed_agent');
-    expect(observed!.bytes).toContain('executable: node');
+  it('does not infer native identity from response text or allow session/model override', async () => {
+    const f = await fixture(); roots.push(f.root);
+    const failed = await invoke({ treatment: { ...command(''), harness: 'yylo_pi', args: ['--continue'] }, prompt: 'p', workspace: f.source, control: path.join(f.root, 'control') });
+    expect(failed.status).toBe('error'); expect(failed.diagnostic).toContain('override');
   });
-
-  it('P3-A3 keeps each complete workflow cwd inside its own workspace and exposes no sibling output', async () => {
-    const api = await phase3();
-    expect(api, 'v2 task/workflow adapter module must exist').not.toBeNull();
-    const source = await sourceRepository();
-    const tree = await git(source.root, 'rev-parse', 'HEAD^{tree}');
-    const common = { sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree, candidate_manifest_hash: source.candidateManifestHash }, experimentId: 'flow-exp', harnessProfile: 'fake', requestedModel: 'provider/model', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', workflowId: 'flow', workflowVersion: '1', workflowPath: 'workflows/flexible.yaml', variables: {}, controlledModelVariable: undefined };
-    const root = await mkdtemp(path.join(os.tmpdir(), 'phase3-siblings-'));
-    const seen: string[] = [];
-    const adapter = { profileId: 'fake', version: '1', probe: async () => ({ ready: true as const }), prepare: async () => ({ prepared: true as const }), run: async (request: { cwd: string }) => { seen.push(request.cwd); await writeFile(path.join(request.cwd, 'candidate-output'), request.cwd); return successfulTerminal('provider/model'); }, reconcile: async () => ({ state: 'ambiguous' as const, reason: 'unknown' }) };
-    for (const attemptIndex of [1, 2]) {
-      const plan = await api!.compileWorkflowAttempt({ ...common, attemptIndex });
-      await api!.executeCaseAttempt({ plan, sourceRepository: source.root, attemptsRoot: path.join(root, 'attempts'), privateRegistryRoot: path.join(root, 'registry'), intentRoot: path.join(root, 'intents'), adapter });
+  const runner = path.resolve('../.juno_task/scripts/workflow_runner.sh');
+  it.skipIf(!existsSync(runner))('executes the existing Workflow Runner prefix independently for two model variants', async () => {
+    const workflow = stringify({ id: 'benchmark-native-prefix', name: 'Synthetic local prefix', vars: { candidate_model: 'placeholder' }, steps: [
+      { id: 'first', command: 'printf "{{ candidate_model }}" > first.txt', fail_on_error: true },
+      { id: 'second', command: 'cat first.txt > second.txt', fail_on_error: true },
+      { id: 'third', command: 'touch forbidden-third.txt', fail_on_error: true },
+    ] });
+    const f = await fixture(workflow); roots.push(f.root);
+    for (const model of ['model-a', 'model-b']) {
+      const output = path.join(f.root, model);
+      const result = await runAttempt({ caseDirectory: f.caseDirectory, output, treatment: TreatmentSchema.parse({ name: model, model, harness: 'workflow_runner',
+        executable: 'python3', args: [runner], timeout_ms: 30_000, setup: workflowSetup, workflow: { model_variable: 'candidate_model', through: 'second' } }) });
+      expect(result.execution.status, JSON.stringify(result.execution)).toBe('completed');
+      expect(await readFile(path.join(output, 'output', 'second.txt'), 'utf8')).toBe(model);
+      expect(existsSync(path.join(output, 'workspace', 'forbidden-third.txt'))).toBe(false);
+      expect(await readFile(path.join(output, 'execution', 'workflow.yaml'), 'utf8')).not.toContain('forbidden-third');
     }
-    expect(seen[0]).not.toBe(seen[1]);
-    expect(path.dirname(path.dirname(seen[0]!))).toBe(path.dirname(path.dirname(seen[1]!)));
   });
-
-  it('P3-A4 binds model-variable matrices with identical non-model input and classifies model-only versus agent-system', async () => {
-    const api = await phase3();
-    expect(api, 'v2 task/workflow adapter module must exist').not.toBeNull();
-    const source = await sourceRepository();
-    const common = { sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree: await git(source.root, 'rev-parse', 'HEAD^{tree}'), candidate_manifest_hash: `sha256:${'e'.repeat(64)}` }, experimentId: 'matrix', attemptIndex: 1, harnessProfile: 'fake', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', workflowId: 'flow', workflowVersion: '1', workflowPath: 'workflows/flexible.yaml' };
-    const first = await api!.compileWorkflowAttempt({ ...common, requestedModel: 'p/m1', variables: { run_date: 'same', candidate_model: 'p/m1' }, controlledModelVariable: 'candidate_model' });
-    const second = await api!.compileWorkflowAttempt({ ...common, requestedModel: 'p/m2', variables: { run_date: 'same', candidate_model: 'p/m2' }, controlledModelVariable: 'candidate_model' });
-    expect(first.comparison_kind).toBe('model_only');
-    expect(api!.nonModelInputHash(first)).toBe(api!.nonModelInputHash(second));
-    const system = await api!.compileWorkflowAttempt({ ...common, requestedModel: 'whole-system-b', variables: { run_date: 'same' } });
-    expect(system.comparison_kind).toBe('agent_system');
+  it.skipIf(!existsSync(runner))('records native workflow semantic failure even if its process exits zero', async () => {
+    const f = await fixture(stringify({ id: 'benchmark-failure', steps: [{ id: 'fails', command: 'exit 7' }] })); roots.push(f.root);
+    const result = await runAttempt({ caseDirectory: f.caseDirectory, output: path.join(f.root, 'attempt'), treatment: TreatmentSchema.parse({ name: 'workflow', model: 'm', harness: 'workflow_runner',
+      executable: 'python3', args: [runner], timeout_ms: 30_000, setup: workflowSetup, workflow: { model_variable: 'model' } }) });
+    expect(result.execution.status, JSON.stringify(result.execution)).toBe('failed');
   });
-
-  it('P3-A5 delegates terminal reuse, supported resume, and ambiguous-effect recovery without duplicate candidate dispatch', async () => {
-    const api = await phase3();
-    expect(api, 'v2 task/workflow adapter module must exist').not.toBeNull();
-    const source = await sourceRepository();
-    const plan = await api!.compileTaskAttempt({ sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree: await git(source.root, 'rev-parse', 'HEAD^{tree}'), candidate_manifest_hash: source.candidateManifestHash }, experimentId: 'recover', attemptIndex: 1, harnessProfile: 'fake', requestedModel: 'p/m', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', taskId: 'task', taskVersion: '1', prompt: 'repair' });
-    const root = await mkdtemp(path.join(os.tmpdir(), 'phase3-recover-'));
-    const run = vi.fn(async () => successfulTerminal('p/m'));
-    const adapter = { profileId: 'fake', version: '1', probe: async () => ({ ready: true as const }), prepare: async () => ({ prepared: true as const }), run, reconcile: async () => ({ state: 'ambiguous' as const, reason: 'manual review' }) };
-    const options = { plan, sourceRepository: source.root, attemptsRoot: path.join(root, 'attempts'), privateRegistryRoot: path.join(root, 'registry'), intentRoot: path.join(root, 'intents'), adapter };
-    const first = await api!.executeCaseAttempt(options);
-    const recovered = await api!.recoverCaseAttempt({ plan, workspace: first.workspace, intentRoot: options.intentRoot, adapter });
-    expect(recovered.terminal_hash).toBe(first.terminal.terminal_hash);
-    expect(run).toHaveBeenCalledTimes(1);
-  }, 60_000);
+  it('passes the same prefix to a custom workflow harness without session translation', async () => {
+    const f = await fixture('id: w\nsteps:\n  - id: first\n    command: echo first\n  - id: second\n    command: echo second\n  - id: third\n    command: echo third\n'); roots.push(f.root);
+    const output = path.join(f.root, 'custom');
+    const result = await runAttempt({ caseDirectory: f.caseDirectory, output, treatment: TreatmentSchema.parse({ ...command(`
+      const fs=require('fs');const request=JSON.parse(process.env.YYLO_BENCHMARK_REQUEST_JSON);
+      const yaml=fs.readFileSync(request.workflow.path,'utf8');
+      if(yaml.includes('third')||!yaml.includes('second')||request.workflow.variables.model!=='test/model')process.exit(4);
+      fs.writeFileSync('prefix.txt',yaml);`), workflow: { model_variable: 'model', through: 'second' } }) });
+    expect(result.execution.status).toBe('completed');
+    expect(JSON.parse(await readFile(path.join(output, 'attempt.json'), 'utf8')).scope).toBe('workflow_prefix');
+  });
+  it('unknown stop step is an error without running downstream commands', async () => {
+    const f = await fixture('id: w\nsteps: [{id: one, command: echo one}]\n'); roots.push(f.root);
+    const result = await runAttempt({ caseDirectory: f.caseDirectory, output: path.join(f.root, 'attempt'), treatment: TreatmentSchema.parse({ name: 'w', model: 'm', harness: 'workflow_runner', executable: '/should/not/run', workflow: { model_variable: 'model', through: 'missing' } }) });
+    expect(result.execution.status).toBe('error'); expect(result.execution.diagnostic).toContain('unknown workflow step');
+  });
 });
