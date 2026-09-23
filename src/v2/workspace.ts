@@ -1,249 +1,141 @@
-import { chmod, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createHash, randomUUID } from 'node:crypto';
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { canonicalHash, canonicalJson } from '../contracts/canonical.js';
-import { buildSnapshot, captureRepositoryResult, deriveCandidateManifest, doctorSnapshot, environmentValueDisclosesProtectedPath, isCredentialEnvironmentName, type RepositoryResultManifest, type SnapshotManifest } from '../snapshot/index.js';
+import { canonicalJson } from '../contracts/canonical.js';
+import type { CaseRecord, FileEntry } from './contracts.js';
 
-export const ATTEMPT_WORKSPACE_SCHEMA_VERSION = 'yylo_benchmark_attempt_workspace.v2' as const;
-
-export interface AttemptWorkspaceReceiptV2 {
-  readonly schema_version: typeof ATTEMPT_WORKSPACE_SCHEMA_VERSION;
-  readonly attempt_id: `sha256:${string}`;
-  readonly backend: 'fresh_repository';
-  readonly source_commit: string;
-  readonly source_tree: string;
-  readonly candidate_manifest_hash: `sha256:${string}`;
-  readonly snapshot_identity: `sha256:${string}`;
-  readonly roots: {
-    readonly repository: string;
-    readonly temporary: string;
-    readonly cache: string;
-    readonly config: string;
-    readonly home: string;
-  };
-  readonly isolation: {
-    readonly git_objects: 'isolated';
-    readonly host_filesystem: 'trusted' | 'selectively_sandboxed';
-    readonly container: 'none';
-    readonly sibling_discovery: 'not_exposed';
-    readonly private_registry: 'not_exposed';
-  };
-  readonly receipt_hash: `sha256:${string}`;
+const exec = promisify(execFile);
+export const digest = (bytes: string | Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+export const objectHash = (value: unknown): string => digest(canonicalJson(value));
+export async function json<T>(file: string): Promise<T> { return JSON.parse(await readFile(file, 'utf8')) as T; }
+export async function immutable(file: string, value: unknown): Promise<void> {
+  await writeFile(file, `${canonicalJson(value)}\n`, { flag: 'wx', mode: 0o600 });
 }
-
-export interface AttemptWorkspaceV2 {
-  readonly root: string;
-  readonly repository: string;
-  readonly temporaryRoot: string;
-  readonly cacheRoot: string;
-  readonly configRoot: string;
-  readonly homeRoot: string;
-  readonly candidateEnvironment: Readonly<NodeJS.ProcessEnv>;
-  readonly receipt: AttemptWorkspaceReceiptV2;
-  readonly snapshot: SnapshotManifest;
-  readonly resultManifest: RepositoryResultManifest | null;
-  readonly controllerPaths: readonly string[];
-  readonly deniedPaths: readonly string[];
-  /** True only for paths intentionally inside this attempt's candidate-visible repository. */
-  assertCandidateVisible(candidate: string): boolean;
+export function relative(file: string): string {
+  if (!file || file.includes('\\') || file.includes('\0') || file.includes('\n') || path.isAbsolute(file)
+      || file.split('/').some((part) => !part || part === '.' || part === '..' || part === '.git')) throw new Error(`unsafe relative path: ${file}`);
+  return file;
 }
-
-export interface CreateAttemptWorkspaceOptions {
-  readonly attemptId: `sha256:${string}`;
-  readonly sourceRepository: string;
-  readonly baseCommit: string;
-  readonly attemptsRoot: string;
-  readonly privateRegistryRoot: string;
-  readonly excludedPaths?: readonly string[];
-  readonly controllerPaths?: readonly string[];
-  readonly deniedPaths?: readonly string[];
-  readonly inheritedEnvironment?: NodeJS.ProcessEnv;
+export function inside(root: string, file: string): boolean {
+  const rel = path.relative(root, file); return rel === '' || !rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel);
 }
-
-const ROUTING = /^(?:(?:PWD|OLDPWD|INIT_CWD)|NPM_(?:CONFIG_LOCAL_PREFIX|PACKAGE_JSON)|(?:YYLO|JUNO)_(?:BENCHMARK|TASK|CONTROLLER|CANONICAL|KANBAN|LEDGER).*|GIT_(?:DIR|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES))$/iu;
-
-function digestFromAttemptId(attemptId: string): string {
-  if (!/^sha256:[0-9a-f]{64}$/u.test(attemptId)) throw new Error('attempt ID must be sha256:<lowercase hex>');
-  return attemptId.slice(7);
+export async function freshDirectory(directory: string): Promise<string> {
+  await mkdir(path.dirname(path.resolve(directory)), { recursive: true });
+  await mkdir(directory, { mode: 0o700 }); // Existing destinations are never overwritten.
+  return realpath(directory);
 }
-
-function inside(root: string, candidate: string): boolean {
-  const relative = path.relative(root, path.resolve(candidate));
-  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
-}
-
-async function privateDirectory(directory: string): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
-  const metadata = await lstat(directory);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error(`attempt root is unsafe: ${directory}`);
-}
-
-function candidateEnvironment(options: {
-  inherited: NodeJS.ProcessEnv;
-  repository: string;
-  temporary: string;
-  cache: string;
-  config: string;
-  home: string;
-  protectedPaths: readonly string[];
-}): Readonly<NodeJS.ProcessEnv> {
-  const environment: NodeJS.ProcessEnv = {};
-  const protectedPaths = [...new Set(options.protectedPaths.map((item) => path.resolve(item)))];
-  const disclosed = (value: string) => environmentValueDisclosesProtectedPath(value, protectedPaths);
-  for (const [name, value] of Object.entries(options.inherited)) {
-    if (value === undefined || ROUTING.test(name) || isCredentialEnvironmentName(name)) continue;
-    if (name.toUpperCase() === 'PATH') {
-      const safe = value.split(path.delimiter).filter((item) => item !== '' && path.isAbsolute(item) && !disclosed(item)).join(path.delimiter);
-      if (safe !== '') environment[name] = safe;
-    } else if (!disclosed(value)) environment[name] = value;
-  }
-  Object.assign(environment, {
-    HOME: options.home,
-    TMPDIR: options.temporary,
-    TMP: options.temporary,
-    TEMP: options.temporary,
-    XDG_CACHE_HOME: options.cache,
-    XDG_CONFIG_HOME: options.config,
-    XDG_DATA_HOME: path.join(options.home, '.local', 'share'),
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null',
+export async function git(cwd: string, args: string[]): Promise<Buffer> {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
+  const { stdout } = await exec('git', ['-C', cwd, '-c', 'core.hooksPath=/dev/null', ...args], {
+    encoding: 'buffer', maxBuffer: 256 * 1024 * 1024, timeout: 60_000,
+    env: { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
   });
-  return Object.freeze(environment);
+  return stdout;
 }
-
-/** Build one candidate-visible fresh repository and private per-attempt process roots. */
-export async function createAttemptWorkspace(options: CreateAttemptWorkspaceOptions): Promise<AttemptWorkspaceV2> {
-  const digest = digestFromAttemptId(options.attemptId);
-  const attemptsRoot = path.resolve(options.attemptsRoot);
-  const registryRoot = path.resolve(options.privateRegistryRoot);
-  const controllerPaths = [...new Set([registryRoot, ...(options.controllerPaths ?? []).map((item) => path.resolve(item))])];
-  // Environment filtering still protects source; doctor must distinguish automatic source from explicit protection.
-  const protectedPaths = [...new Set([path.resolve(options.sourceRepository), ...controllerPaths])];
-  if (inside(attemptsRoot, registryRoot) || inside(registryRoot, attemptsRoot)) {
-    throw new Error('private registry and attempt roots must be disjoint');
+export async function initializeRepository(directory: string): Promise<string> {
+  await git(directory, ['init', '--quiet']);
+  await git(directory, ['add', '--all', '--force']);
+  await git(directory, ['-c', 'user.name=Benchmark', '-c', 'user.email=benchmark@localhost', 'commit', '--quiet', '--allow-empty', '-m', 'Benchmark starting input']);
+  return (await git(directory, ['rev-parse', 'HEAD'])).toString().trim();
+}
+export async function manifest(root: string): Promise<FileEntry[]> {
+  const files: FileEntry[] = [];
+  async function visit(directory: string): Promise<void> {
+    for (const name of (await readdir(directory)).sort()) {
+      const file = path.join(directory, name); const rel = path.relative(root, file).split(path.sep).join('/');
+      relative(rel); const stat = await lstat(file);
+      if (stat.isSymbolicLink()) throw new Error(`symlinks are not supported in retained inputs/outputs: ${rel}`);
+      if (stat.isDirectory()) await visit(file);
+      else if (stat.isFile()) files.push({ path: rel, sha256: digest(await readFile(file)), executable: (stat.mode & 0o111) !== 0 });
+      else throw new Error(`non-regular file: ${rel}`);
+    }
   }
-  await privateDirectory(attemptsRoot);
-  const root = path.join(attemptsRoot, digest);
-  // buildSnapshot requires a non-existent destination, so only create the parent.
-  await mkdir(root, { mode: 0o700 });
-  await chmod(root, 0o700);
-  const repository = path.join(root, 'repository');
-  const temporary = path.join(root, 'tmp');
-  const cache = path.join(root, 'cache');
-  const config = path.join(root, 'config');
-  const home = path.join(root, 'home');
-  for (const directory of [temporary, cache, config, home]) await privateDirectory(directory);
-  await privateDirectory(path.join(home, '.local', 'share'));
-
-  const mandatoryExclusions = ['.juno_task', ...(options.excludedPaths ?? [])];
-  const snapshot = await buildSnapshot({
-    sourceRepository: options.sourceRepository,
-    baseCommit: options.baseCommit,
-    destination: repository,
-    excludedPaths: [...new Set(mandatoryExclusions)],
-  });
-  const candidateManifest = await deriveCandidateManifest({ sourceRepository: options.sourceRepository, baseCommit: options.baseCommit,
-    excludedPaths: [...new Set(mandatoryExclusions)] });
-  await chmod(repository, 0o700);
-  const environment = candidateEnvironment({ inherited: options.inheritedEnvironment ?? process.env, repository, temporary, cache, config, home, protectedPaths });
-  const core = {
-    schema_version: ATTEMPT_WORKSPACE_SCHEMA_VERSION,
-    attempt_id: options.attemptId,
-    backend: 'fresh_repository' as const,
-    source_commit: snapshot.source_commit,
-    source_tree: snapshot.source_tree,
-    candidate_manifest_hash: candidateManifest.manifest_hash,
-    snapshot_identity: snapshot.content_identity,
-    roots: { repository: 'repository', temporary: 'tmp', cache: 'cache', config: 'config', home: 'home' },
-    isolation: {
-      git_objects: 'isolated' as const,
-      host_filesystem: (options.deniedPaths?.length ?? 0) > 0 ? 'selectively_sandboxed' as const : 'trusted' as const,
-      container: 'none' as const,
-      sibling_discovery: 'not_exposed' as const,
-      private_registry: 'not_exposed' as const,
-    },
-  };
-  const receipt: AttemptWorkspaceReceiptV2 = Object.freeze({ ...core, receipt_hash: canonicalHash(core) });
-  await writeFile(path.join(root, '.workspace.json'), `${canonicalJson({ receipt, snapshot })}\n`, { mode: 0o600, flag: 'wx' });
-  const canonicalRepository = await realpath(repository);
-  return Object.freeze({
-    root,
-    repository,
-    temporaryRoot: temporary,
-    cacheRoot: cache,
-    configRoot: config,
-    homeRoot: home,
-    candidateEnvironment: environment,
-    receipt,
-    snapshot,
-    resultManifest: null,
-    controllerPaths: Object.freeze(controllerPaths), deniedPaths: Object.freeze([...(options.deniedPaths ?? [])]),
-    assertCandidateVisible(candidate: string): boolean { return inside(canonicalRepository, candidate); },
-  });
+  await visit(root); return files;
 }
-
-export async function loadAttemptWorkspace(options: Pick<CreateAttemptWorkspaceOptions, 'attemptId' | 'attemptsRoot' | 'inheritedEnvironment'> & {
-  readonly sourceRepository?: string; readonly privateRegistryRoot?: string; readonly controllerPaths?: readonly string[]; readonly deniedPaths?: readonly string[];
-}): Promise<AttemptWorkspaceV2> {
-  const root = path.join(path.resolve(options.attemptsRoot), digestFromAttemptId(options.attemptId));
-  const value = JSON.parse(await readFile(path.join(root, '.workspace.json'), 'utf8')) as { receipt?: AttemptWorkspaceReceiptV2; snapshot?: SnapshotManifest };
-  let resultManifest: RepositoryResultManifest | null = null;
-  try { resultManifest = JSON.parse(await readFile(path.join(root, '.result-workspace.json'), 'utf8')) as RepositoryResultManifest; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  const receipt = value.receipt;
-  const snapshot = value.snapshot;
-  if (receipt === undefined || snapshot === undefined || receipt.schema_version !== ATTEMPT_WORKSPACE_SCHEMA_VERSION
-      || receipt.attempt_id !== options.attemptId) throw new Error('attempt workspace receipt is malformed');
-  const { receipt_hash: claimed, ...core } = receipt;
-  if (claimed !== canonicalHash(core) || receipt.source_commit !== snapshot.source_commit || receipt.source_tree !== snapshot.source_tree
-      || receipt.snapshot_identity !== snapshot.content_identity) throw new Error('attempt workspace receipt integrity failed');
-  const repository = path.join(root, receipt.roots.repository);
-  const temporary = path.join(root, receipt.roots.temporary);
-  const cache = path.join(root, receipt.roots.cache);
-  const config = path.join(root, receipt.roots.config);
-  const home = path.join(root, receipt.roots.home);
-  const canonicalRepository = await realpath(repository);
-  const controllerPaths = [...new Set([...(options.privateRegistryRoot === undefined ? [] : [path.resolve(options.privateRegistryRoot)]),
-    ...(options.controllerPaths ?? []).map((item) => path.resolve(item))])];
-  const protectedPaths = [...new Set([...(options.sourceRepository === undefined ? [] : [path.resolve(options.sourceRepository)]), ...controllerPaths])];
-  const environment = candidateEnvironment({ inherited: options.inheritedEnvironment ?? process.env, repository, temporary, cache, config, home, protectedPaths });
-  return Object.freeze({ root, repository, temporaryRoot: temporary, cacheRoot: cache, configRoot: config, homeRoot: home,
-    candidateEnvironment: environment, receipt: Object.freeze(receipt), snapshot: Object.freeze(snapshot),
-    resultManifest: resultManifest === null ? null : Object.freeze(resultManifest), controllerPaths: Object.freeze(controllerPaths),
-    deniedPaths: Object.freeze([...(options.deniedPaths ?? [])]),
-    assertCandidateVisible(candidate: string): boolean { return inside(canonicalRepository, candidate); } });
+export async function verifyFiles(root: string, expected: FileEntry[]): Promise<void> {
+  if (objectHash(await manifest(root)) !== objectHash(expected)) throw new Error('retained file manifest mismatch');
 }
-
-/** Publish the candidate's exact post-execution repository identity once, before terminal publication. */
-export async function publishAttemptWorkspaceResult(workspace: AttemptWorkspaceV2): Promise<RepositoryResultManifest> {
-  const result = await captureRepositoryResult(workspace.repository);
-  const destination = path.join(workspace.root, '.result-workspace.json');
-  try { await writeFile(destination, `${canonicalJson(result)}\n`, { mode: 0o600, flag: 'wx' }); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    const retained = JSON.parse(await readFile(destination, 'utf8')) as RepositoryResultManifest;
-    if (canonicalHash(retained) !== canonicalHash(result)) throw new Error('post-execution repository/workspace drift detected before terminal publication');
-    return retained;
+export async function copyFiles(source: string, destination: string, entries: FileEntry[]): Promise<void> {
+  for (const entry of entries) {
+    const rel = relative(entry.path); const from = path.join(source, rel);
+    const resolved = await realpath(from);
+    if (!inside(await realpath(source), resolved) || !(await lstat(from)).isFile()) throw new Error(`unsafe source file: ${rel}`);
+    const bytes = await readFile(from);
+    if (digest(bytes) !== entry.sha256) throw new Error(`source bytes changed: ${rel}`);
+    const to = path.join(destination, rel); await mkdir(path.dirname(to), { recursive: true });
+    await writeFile(to, bytes, { flag: 'wx', mode: entry.executable ? 0o755 : 0o644 });
   }
-  return result;
 }
-
-export async function doctorAttemptWorkspace(
-  workspace: AttemptWorkspaceV2,
-  options: { readonly sourceRepository?: string } = {},
-): Promise<{ readonly ok: true; readonly receipt_hash: `sha256:${string}` }> {
-  const metadata = await lstat(workspace.root);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) throw new Error('attempt workspace root is not private');
-  if (workspace.assertCandidateVisible(workspace.root) || workspace.assertCandidateVisible(path.dirname(workspace.root))) {
-    throw new Error('candidate visibility boundary includes attempt control paths');
+const DEFAULT_EXCLUSIONS = ['.juno_task', '.gitmodules', 'hidden-graders', 'reference-solutions'];
+export async function prepareCase(input: {
+  source: string; base: string; prompt: string; output: string; reviewed: boolean;
+  reference?: string; ledgerTaskId?: string; workflow?: string; exclude?: string[]; include?: string[];
+}): Promise<CaseRecord> {
+  if (!input.reviewed) throw new Error('case preparation requires explicit review of requirements, base and answer exclusions');
+  if (!input.prompt.trim()) throw new Error('case prompt is empty');
+  const source = await realpath(input.source);
+  if (await realpath((await git(source, ['rev-parse', '--show-toplevel'])).toString().trim()) !== source) throw new Error('source must be the repository root');
+  const parent = path.resolve(input.output, '..'); await mkdir(parent, { recursive: true });
+  if (inside(source, path.join(await realpath(parent), path.basename(input.output)))) throw new Error('case storage must be outside the source repository');
+  const commit = (await git(source, ['rev-parse', '--verify', '--end-of-options', `${input.base}^{commit}`])).toString().trim();
+  const reference = input.reference ? (await git(source, ['rev-parse', '--verify', '--end-of-options', `${input.reference}^{commit}`])).toString().trim() : null;
+  if (reference) {
+    if (reference === commit) throw new Error('reference and pre-solution base must differ');
+    await git(source, ['merge-base', '--is-ancestor', commit, reference]);
   }
-  await doctorSnapshot({
-    repository: workspace.repository,
-    manifest: workspace.snapshot,
-    ...(workspace.resultManifest === null ? {} : { resultManifest: workspace.resultManifest }),
-    ...(options.sourceRepository === undefined ? {} : { sourceRepository: options.sourceRepository }),
-    canonicalControllerPaths: workspace.controllerPaths,
-    candidateEnvironment: workspace.candidateEnvironment,
-  });
-  return Object.freeze({ ok: true, receipt_hash: workspace.receipt.receipt_hash });
+  const exclusions = [...new Set([...DEFAULT_EXCLUSIONS, ...(input.exclude ?? [])].map(relative))].sort();
+  const inclusions = [...new Set((input.include ?? []).map(relative))].sort();
+  // Explicit reviewed source subtrees may override defaults, never a caller's explicit exclusion.
+  const under = (file: string, parent: string) => file === parent || file.startsWith(`${parent}/`);
+  const tree = (await git(source, ['ls-tree', '-rz', commit])).toString().split('\0').filter(Boolean);
+  const entries = tree.map((row) => { const [meta, file] = row.split('\t'); return { meta: meta!, file: relative(file!) }; })
+    .filter(({ file }) => !(input.exclude ?? []).some((item) => under(file, item))
+      && (!exclusions.some((item) => under(file, item)) || inclusions.some((item) => under(file, item))));
+  for (const { meta, file } of entries) if (!/^100(?:644|755) blob /.test(meta)) throw new Error(`source symlink/gitlink is unsupported; explicitly exclude or materialize it before review: ${file}`);
+  if (!entries.length) throw new Error('case source snapshot is empty');
+  const output = await freshDirectory(input.output); const snapshot = path.join(output, 'source'); await mkdir(snapshot);
+  // Git creates the archive from the reviewed commit; no refs, objects or worktree links are copied.
+  const archive = await git(source, ['archive', '--format=tar', commit, '--', ...entries.map((item) => item.file)]);
+  const tar = path.join(output, 'source.tar'); await writeFile(tar, archive, { flag: 'wx', mode: 0o600 });
+  await exec('tar', ['-xf', tar, '-C', snapshot], { timeout: 60_000 });
+  await unlink(tar); // Disposable transport only; the verified source files are the retained input.
+  for (const { meta, file } of entries) {
+    const [mode, , oid] = meta.split(' ');
+    const bytes = await readFile(path.join(snapshot, file));
+    const actual = createHash(oid!.length === 64 ? 'sha256' : 'sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+    if (actual !== oid || ((await lstat(path.join(snapshot, file))).mode & 0o111 ? '100755' : '100644') !== mode) {
+      throw new Error(`archive changed source bytes/mode (check export attributes): ${file}`);
+    }
+  }
+  let workflow: string | null = null;
+  if (input.workflow) {
+    const name = relative(input.workflow);
+    if (!entries.some((entry) => entry.file === name)) throw new Error('workflow must be included in reviewed source');
+    workflow = await readFile(path.join(snapshot, name), 'utf8');
+  }
+  const core = { schema: 'yylo_benchmark_case.v3' as const, source_commit: commit, reference_commit: reference,
+    ledger_task_id: input.ledgerTaskId ?? null, reviewed: true as const, prompt: input.prompt, workflow, exclusions, inclusions, files: await manifest(snapshot) };
+  const record = { ...core, sha256: objectHash(core) }; await immutable(path.join(output, 'case.json'), record);
+  return record;
 }
+export async function loadCase(directory: string): Promise<CaseRecord> {
+  const record = await json<CaseRecord>(path.join(directory, 'case.json')); const { sha256, ...core } = record;
+  if (core.schema !== 'yylo_benchmark_case.v3' || core.reviewed !== true || sha256 !== objectHash(core)) throw new Error('invalid case record');
+  await verifyFiles(path.join(directory, 'source'), core.files); return record;
+}
+export async function retainOutput(workspace: string, output: string): Promise<FileEntry[]> {
+  await mkdir(output);
+  const names = [...new Set((await git(workspace, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])).toString().split('\0').filter(Boolean))].sort();
+  for (const name of names) {
+    const rel = relative(name); const from = path.join(workspace, rel);
+    let stat; try { stat = await lstat(from); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    if (!stat.isFile() || !inside(await realpath(workspace), await realpath(from))) throw new Error(`unsafe output file: ${rel}`);
+    const to = path.join(output, rel); await mkdir(path.dirname(to), { recursive: true });
+    await copyFile(from, to); await chmod(to, stat.mode & 0o111 ? 0o755 : 0o644);
+  }
+  return manifest(output);
+}
+export function newId(): string { return randomUUID(); }

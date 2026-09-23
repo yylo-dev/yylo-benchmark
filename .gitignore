@@ -1,3 +1,6 @@
 # YYLO runtime state written by benchmark tests and CLI runs
 .juno_task/
 .juno-task/
+node_modules/
+dist/
+*.tgz
