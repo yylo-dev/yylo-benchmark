@@ -12,7 +12,12 @@ reviewed case -> independent attempts -> retained outputs
 
 Benchmark does not choose a winner or combine judge opinions with test results. It does not implement a workflow engine, production authority, provider catalog, repair loop or automatic retry.
 
-## Breaking redesign
+## Breaking redesign — 0.2.0 (unreleased source)
+
+The package source declares **0.2.0**, coordinated with CLI **0.2.10** and canonical
+skills **2.1.0**. These version changes do not establish a published release or
+upgrade any installed runtime. CLI requires Benchmark 0.2.0 exactly; install only
+through a separately authorized release process.
 
 The source now uses v3 case/attempt/evaluation records. The old v1/v2 APIs, configuration, plan/recover/doctor/regrade/rejudge commands, plugin registry and governed-production workflow boundary are retired. Ordinary Workflow Runner execution remains supported through delegation. Old plans and evidence are **not migrated, overwritten, deleted or reinterpreted**. Use their original pinned implementation if historical inspection is necessary. This source change is not a package publication or global runtime upgrade.
 
