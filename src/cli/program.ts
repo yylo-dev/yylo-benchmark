@@ -4,8 +4,11 @@ import { Command } from 'commander';
 import { prepareCase, freshDirectory, json } from '../v2/workspace.js';
 import { runAttempt } from '../v2/adapters.js';
 import { evaluate } from '../v2/evaluators.js';
-import { AssessmentSchema, EvaluatorSchema, TreatmentSchema } from '../v2/contracts.js';
+import { EvaluatorSchema, TreatmentSchema } from '../v2/contracts.js';
 import { disqualify, draftLedgerCase, report, table } from '../v2/cli.js';
+import { loadChecklist } from '../v2/checklists.js';
+
+type CriteriaOptions = { criteria?: string; projectCriteria?: string };
 
 declare const __YYLO_BENCHMARK_PACKAGE_VERSION__: string | undefined;
 export const PACKAGE_VERSION = typeof __YYLO_BENCHMARK_PACKAGE_VERSION__ === 'string' ? __YYLO_BENCHMARK_PACKAGE_VERSION__ : '0.0.0-unbuilt';
@@ -13,6 +16,11 @@ export function createProgram(options: { cwd?: string; stdout?: (text: string) =
   const cwd = options.cwd ?? process.cwd(); const out = options.stdout ?? ((text: string) => process.stdout.write(text));
   const print = (value: unknown) => out(`${JSON.stringify(value)}\n`);
   const resolve = (value: string) => path.resolve(cwd, value);
+  const criteria = async (opts: CriteriaOptions) => {
+    const checklist = await loadChecklist({ ...(opts.criteria ? { criteria: resolve(opts.criteria) } : {}),
+      ...(opts.projectCriteria ? { projectCriteria: resolve(opts.projectCriteria) } : {}) });
+    return checklist ? { checklist } : {};
+  };
   const program = new Command().name('yylo-benchmark').version(PACKAGE_VERSION)
     .description('Thin trusted-host task/workflow experiments and independent evaluations');
   const cases = program.command('case').description('Prepare a reviewed answer-free reusable case');
@@ -21,13 +29,15 @@ export function createProgram(options: { cwd?: string; stdout?: (text: string) =
   cases.command('create').requiredOption('--source <path>').requiredOption('--base <ref>').requiredOption('--prompt <file>')
     .requiredOption('--output <directory>').option('--reviewed', 'Confirm original requirements, historical base and answer exclusions were reviewed')
     .option('--reference <ref>').option('--ledger-task <id>').option('--workflow <tracked-path>')
+    .option('--criteria <file>', 'Task checklist YAML/JSON; frozen into the reviewed case')
+    .option('--project-criteria <file>', 'Reusable project criteria YAML/JSON; duplicate IDs are refused')
     .option('--exclude <path>', 'Exclude answer-bearing source paths; repeatable', (value: string, prior: string[]) => [...prior, value], [])
     .option('--include <path>', 'Explicitly reviewed source subtree overriding default exclusions; repeatable', (value: string, prior: string[]) => [...prior, value], [])
-    .action(async (opts: { source: string; base: string; prompt: string; output: string; reviewed?: boolean; reference?: string; ledgerTask?: string; workflow?: string; exclude: string[]; include: string[] }) => {
+    .action(async (opts: { source: string; base: string; prompt: string; output: string; reviewed?: boolean; reference?: string; ledgerTask?: string; workflow?: string; exclude: string[]; include: string[] } & CriteriaOptions) => {
       if (opts.ledgerTask) await draftLedgerCase(opts.ledgerTask, cwd);
       print(await prepareCase({ source: resolve(opts.source), base: opts.base, prompt: await readFile(resolve(opts.prompt), 'utf8'), output: resolve(opts.output), reviewed: opts.reviewed === true,
         ...(opts.reference ? { reference: opts.reference } : {}), ...(opts.ledgerTask ? { ledgerTaskId: opts.ledgerTask } : {}),
-        ...(opts.workflow ? { workflow: opts.workflow } : {}), exclude: opts.exclude, include: opts.include }));
+        ...(opts.workflow ? { workflow: opts.workflow } : {}), exclude: opts.exclude, include: opts.include, ...await criteria(opts) }));
     });
   program.command('run').requiredOption('--case <directory>').requiredOption('--treatment <json>', 'Treatment JSON file; repeat for comparisons', (value: string, prior: string[]) => [...prior, value], [])
     .requiredOption('--output <new-directory>').option('--attempts <count>', 'Explicit repetitions per treatment', '1')
@@ -45,10 +55,12 @@ export function createProgram(options: { cwd?: string; stdout?: (text: string) =
       }
     });
   program.command('evaluate').requiredOption('--attempt <directory>').requiredOption('--evaluator <json>').option('--assessment <json>', 'Human assessment file')
-    .action(async (opts: { attempt: string; evaluator: string; assessment?: string }) => {
+    .option('--criteria <file>', 'Explicit revised task checklist; appends evaluation, never changes the case')
+    .option('--project-criteria <file>', 'Explicit project criteria for this evaluation (replaces inherited checklist)')
+    .action(async (opts: { attempt: string; evaluator: string; assessment?: string } & CriteriaOptions) => {
       const evaluator = EvaluatorSchema.parse(await json(resolve(opts.evaluator)));
-      print(await evaluate({ attemptDirectory: resolve(opts.attempt), evaluator,
-        ...(opts.assessment ? { assessment: AssessmentSchema.parse(await json(resolve(opts.assessment))) } : {}) }));
+      print(await evaluate({ attemptDirectory: resolve(opts.attempt), evaluator, ...await criteria(opts),
+        ...(opts.assessment ? { assessment: await json(resolve(opts.assessment)) } : {}) }));
     });
   program.command('report').requiredOption('--root <directory>', 'Experiment or individual attempt directory').option('--table', 'Print a Markdown comparison table')
     .action(async (opts: { root: string; table?: boolean }) => { const rows = await report(resolve(opts.root)); if (opts.table) out(`${table(rows)}\n`); else print(rows); });

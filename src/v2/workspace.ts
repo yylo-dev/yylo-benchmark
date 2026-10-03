@@ -5,6 +5,7 @@ import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, unlink, wri
 import path from 'node:path';
 import { canonicalJson } from '../contracts/canonical.js';
 import type { CaseRecord, FileEntry } from './contracts.js';
+import { validateChecklist, checklistPrompt, type FrozenChecklist } from './checklists.js';
 
 const exec = promisify(execFile);
 export const digest = (bytes: string | Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
@@ -72,10 +73,11 @@ export async function copyFiles(source: string, destination: string, entries: Fi
 const DEFAULT_EXCLUSIONS = ['.juno_task', '.gitmodules', 'hidden-graders', 'reference-solutions'];
 export async function prepareCase(input: {
   source: string; base: string; prompt: string; output: string; reviewed: boolean;
-  reference?: string; ledgerTaskId?: string; workflow?: string; exclude?: string[]; include?: string[];
+  reference?: string; ledgerTaskId?: string; workflow?: string; exclude?: string[]; include?: string[]; checklist?: FrozenChecklist;
 }): Promise<CaseRecord> {
   if (!input.reviewed) throw new Error('case preparation requires explicit review of requirements, base and answer exclusions');
   if (!input.prompt.trim()) throw new Error('case prompt is empty');
+  const checklist = input.checklist === undefined ? undefined : validateChecklist(input.checklist);
   const source = await realpath(input.source);
   if (await realpath((await git(source, ['rev-parse', '--show-toplevel'])).toString().trim()) !== source) throw new Error('source must be the repository root');
   const parent = path.resolve(input.output, '..'); await mkdir(parent, { recursive: true });
@@ -117,13 +119,15 @@ export async function prepareCase(input: {
     workflow = await readFile(path.join(snapshot, name), 'utf8');
   }
   const core = { schema: 'yylo_benchmark_case.v3' as const, source_commit: commit, reference_commit: reference,
-    ledger_task_id: input.ledgerTaskId ?? null, reviewed: true as const, prompt: input.prompt, workflow, exclusions, inclusions, files: await manifest(snapshot) };
+    ledger_task_id: input.ledgerTaskId ?? null, reviewed: true as const, ...(checklist ? { checklist } : {}),
+    prompt: checklist ? checklistPrompt(input.prompt, checklist) : input.prompt, workflow, exclusions, inclusions, files: await manifest(snapshot) };
   const record = { ...core, sha256: objectHash(core) }; await immutable(path.join(output, 'case.json'), record);
   return record;
 }
 export async function loadCase(directory: string): Promise<CaseRecord> {
   const record = await json<CaseRecord>(path.join(directory, 'case.json')); const { sha256, ...core } = record;
   if (core.schema !== 'yylo_benchmark_case.v3' || core.reviewed !== true || sha256 !== objectHash(core)) throw new Error('invalid case record');
+  if (core.checklist !== undefined) validateChecklist(core.checklist);
   await verifyFiles(path.join(directory, 'source'), core.files); return record;
 }
 export async function retainOutput(workspace: string, output: string): Promise<FileEntry[]> {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { FrozenChecklist, CriterionResult, ChecklistScore } from './checklists.js';
 
 const text = z.string().min(1);
 const argv = z.array(z.string()).default([]);
@@ -44,7 +45,7 @@ export const AssessmentSchema = z.object({
   verdict: z.enum(['pass', 'fail', 'unknown']),
   findings: z.array(z.string()).default([]),
 }).strict();
-export type Assessment = z.infer<typeof AssessmentSchema>;
+export type Assessment = z.infer<typeof AssessmentSchema> & { criteria?: CriterionResult[] };
 export interface FileEntry { path: string; sha256: string; executable: boolean }
 export interface CaseRecord {
   schema: 'yylo_benchmark_case.v3';
@@ -52,6 +53,7 @@ export interface CaseRecord {
   reference_commit: string | null;
   ledger_task_id: string | null;
   reviewed: true;
+  checklist?: FrozenChecklist;
   prompt: string;
   workflow: string | null;
   exclusions: string[];
@@ -81,6 +83,7 @@ export interface AttemptIntent {
   ledger_task_id: string | null;
   source_commit: string;
   case_prompt: string;
+  checklist?: FrozenChecklist;
   treatment: Treatment;
   scope: 'task' | 'workflow' | 'workflow_prefix';
   started_at: string;
@@ -102,6 +105,10 @@ export interface EvaluationRecord {
   attempt_id: string;
   result_hash: string;
   evaluator: Evaluator;
+  checklist?: FrozenChecklist;
+  checklist_origin?: 'case' | 'evaluation';
+  checklist_judge_instruction?: string | null;
+  checklist_score?: ChecklistScore;
   validity: 'valid' | 'error';
   assessment: Assessment;
   execution: Execution | null;
