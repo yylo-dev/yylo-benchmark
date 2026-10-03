@@ -55,6 +55,40 @@ yylo-benchmark case create \
 
 `--reference` and `--ledger-task` are optional provenance; the reference must differ from and descend from the base. It is never copied into candidate input. Case storage must be outside the source repository. `--workflow path/in/source.yaml` captures a tracked workflow at the chosen base. No models are launched during case creation. Use baseline/reference controls to review behavior-based checks before scoring; this is evaluation work, not a new orchestration framework.
 
+### Optional frozen project/task criteria
+
+To measure quality with a reusable checklist, add `--project-criteria /external/project.yaml`
+and/or `--criteria /external/task.yaml` to `case create`. The files are explicit
+YAML/JSON—no registry, discovery, weights, inheritance or overrides. Each has:
+
+```yaml
+name: Greeting behavior
+version: "1"
+assumptions:
+  - Node.js is available; publication is outside this exercise.
+criteria:
+  - id: TASK.greeting
+    pass_when: Running node greet.cjs Ada prints exactly Hello, Ada! followed by one newline to stdout and exits zero.
+```
+
+IDs must be unique across both files and match `[A-Za-z][A-Za-z0-9_.-]{0,63}`.
+Empty/whitespace-only text and unknown fields are refused. `assumptions` is
+optional; `criteria` is nonempty, at most 100 entries per document. File input is
+limited to 64 KiB per document; YAML aliases and duplicate keys are refused.
+
+The case freezes normalized documents and their canonical digest, and exposes
+those public criteria/assumptions in candidate instructions. Attempts and later
+evaluations retain the same contract. Changing a source file cannot revise an
+existing case. Cases without criteria keep legacy v3 behavior.
+
+For incomplete historical tasks, record reconstruction assumptions and obtain
+operator approval before candidate inspection. Review baseline/reference,
+negative and valid alternative-implementation controls; never require the
+reference patch's shape. See the packaged
+[checklist skill](skills/benchmark-checklist/SKILL.md) and its reusable
+[project](skills/benchmark-checklist/examples/project.yaml) and
+[task](skills/benchmark-checklist/examples/task.yaml) examples.
+
 ## 2. Run treatments
 
 A treatment JSON file chooses one model, harness and configuration:
@@ -125,7 +159,7 @@ This compares **the prefix through review**, not review independently. Model sel
 
 ## 3. Evaluate retained output independently
 
-A check profile uses a regular command receiving a JSON packet on stdin. It must return exactly a JSON assessment and exit zero; test failure is `verdict: "fail"`, whereas nonzero exit or malformed output is an **evaluator error**:
+A check profile uses a regular command receiving a JSON packet on stdin. It must return exactly a JSON assessment and exit zero; for legacy cases test failure is `verdict: "fail"`, whereas nonzero exit or malformed output is an **evaluator error**:
 
 ```json
 {
@@ -171,6 +205,45 @@ Each evaluation has its own ID, specification and retained result, and runs in a
 
 Human profiles use `{"name":"reviewer","kind":"human"}` plus `--assessment /tmp/assessment.json`. Checks/judges/humans may assess a retained failed attempt, but their verdict cannot change its execution status. Judge disagreements remain independent rows.
 
+### Checklist assessments and revisions
+
+When criteria are present, check packets include `checklist` and
+`checklist_origin`; judges receive the same packet plus a fixed evidence-based
+instruction. Checks, judges and humans must return **only** the following shape,
+covering every frozen ID exactly once:
+
+```json
+{"criteria":[{"id":"TASK.greeting","result":"pass","evidence":["node greet.cjs Ada: exit 0, expected stdout; greet.cjs:1"]}]}
+```
+
+Every result is `pass`, `fail` or `unknown`; evidence is a nonempty array of
+nonempty strings. Missing/extra/duplicate IDs, malformed evidence, or supplied
+verdicts/scores are evaluator errors. All criteria must be assessed in one record;
+separate partial checks/judges are not automatically combined. A supplemental
+rubric cannot introduce unlisted criteria. Execution completion is not correctness.
+
+The runner, not the judge, computes equal-weight **loss = failed / total** (0 is
+all pass, 1 is all fail). Any unknown makes the entire assessment unscored with
+`loss: null` and `insufficient_evidence`; evaluator errors yield null with
+`evaluation_error`. Verdict is derived: unknown first, then fail, otherwise pass.
+Low loss is partial quality, not a production acceptance decision. Evidence-based
+judgments are observations, not proof of universal correctness.
+
+Without flags, `evaluate` inherits the frozen case checklist. To change it later:
+
+```bash
+yylo-benchmark evaluate --attempt /tmp/experiments/comparison-1/1-1 \
+  --evaluator /tmp/judge-a.json --criteria /external/task-v2.yaml \
+  --project-criteria /external/project.yaml
+```
+
+Supplying either criteria flag **replaces the whole inherited checklist** for the
+new independent evaluation. Resupply both files to retain both. The result records
+`checklist_origin: evaluation`; reports mark `criteria_changed` when hashes differ.
+Original candidate intent and earlier evaluations are untouched. Explicit criteria
+can also assess a legacy attempt retrospectively; never describe that contract as
+frozen before execution. Meaningful revisions should use a new document version.
+
 ## 4. Report and disqualify
 
 ```bash
@@ -190,7 +263,40 @@ experiment/1-1/output/                # retained result files
 experiment/1-1/evaluations/<id>/       # independent assessment and copied workspace
 ```
 
+Checklist JSON rows additionally expose `total`, `passed`, `failed`, `unknown`,
+`criteria_results`, `loss`, `score_status`, `score_reason`, `checklist_hash`,
+`evaluator_hash` and `comparison_key`. The evaluator identity hashes its specification
+and frozen built-in checklist judge instruction (null for checks/humans). The
+comparison identity binds case, checklist, evaluator and declared candidate execution
+settings, excluding model/name. It does not attest mutable tools or provider weights.
+Different keys must not be silently pooled. Disqualification makes report loss null
+without changing original assessments. Legacy no-checklist evaluations have null
+loss with `no_checklist`; missing evaluations remain unscored, never zero.
+
+Cost and latency remain separate from loss; missing cost is null. Report scored,
+unknown/error/disqualified counts and repetition count alongside results. One run
+is exploratory; a few repeats are not a statistically reliable leaderboard. Do
+not cherry-pick scored runs or a favorable judge. If aggregating externally, use
+equal task weights, show missing coverage, and preserve per-task rows. No combined
+quality/cost score, automatic winner, or ROI preference is imposed.
+
 Keep bundles, attempts and evaluations outside candidate source repositories. Keep credentials out of prompt/config files and retained logs. Retention and cleanup are operator decisions, not automatic runner actions.
+
+## Packaged skill (explicit use, no installation side effects)
+
+`skills/benchmark-checklist/SKILL.md` and its `examples/` ship inside this npm
+package. Read the file under the selected Benchmark package root or explicitly
+load it with your harness's supported skill mechanism. It is not automatically
+activated, globally installed, or managed by `yy scripts update` / `yy skills`.
+It does not replace the independent `benchmark-yylo` skill from `yylo-skills`.
+
+Discover support with `yylo-benchmark case create --help` and
+`yylo-benchmark evaluate --help`: both must show the criteria flags. The same
+source version can exist in an older installation without these additions;
+source delivery and packed verification are **not publication or activation**.
+Do not silently upgrade or switch binaries. The skill covers reconstruction,
+operator approval, controls, evidence, revisions and limits. Its example assessment
+is synthetic, not reusable evidence about your own attempt.
 
 ## Development
 
@@ -203,4 +309,12 @@ npm pack --ignore-scripts --pack-destination /tmp
 node scripts/verify-v2-packed-acceptance.mjs /tmp/yylo-benchmark-VERSION.tgz
 ```
 
-The retained script filename is historical; it now verifies the thin v3 CLI from a local tarball with synthetic commands only. No publication, global installation or live model calls occur. Package version changes/publication remain a separate maintainer action.
+The retained script filename is historical; it verifies the thin v3 CLI, checklist
+scoring and packaged guidance from a local tarball with synthetic commands only.
+It installs into a fresh temporary consumer using offline npm. Its cache must
+contain metadata and runtime dependency versions selected by the package ranges;
+`npm ci` alone may not populate all of them. Prepare that cache separately with
+network permission if needed; `ENOTCACHED` is a missing prerequisite, not a model
+failure. Scratch evidence is retained. No publication, global installation or live
+model calls occur. Package version changes/publication remain a separate maintainer
+action.

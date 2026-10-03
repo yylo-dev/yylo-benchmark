@@ -17,6 +17,7 @@
   "files": [
     "dist",
     "README.md",
+    "skills/benchmark-checklist",
     "scripts/verify-v2-packed-acceptance.mjs",
     "LICENSE"
   ],
