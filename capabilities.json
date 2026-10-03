@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packageId": "yylo-benchmark",
-  "sourceVersion": "0.2.0",
+  "sourceVersion": "0.2.1",
   "evidenceDate": "2026-09-23",
   "prerequisites": "Node.js 20.10+, Git, tar and POSIX process groups. Trusted-host workspace hygiene, not a filesystem/account sandbox. Harness setup remains caller-owned.",
   "releases": [
@@ -23,10 +23,20 @@
       "id": "cases",
       "title": "Reviewed reusable cases",
       "summary": "Prepare historical Ledger tasks or supplied prompts from an explicitly reviewed pre-solution base.",
-      "details": ["Ledger draft reads completed requirements without completion responses; it never guesses the historical base.", "Fresh source snapshots exclude future Git history, controller metadata and declared answer paths."],
-      "commands": ["yylo-benchmark case draft --ledger-task TASK_ID", "yylo-benchmark case create --help"],
+      "details": [
+        "Ledger draft reads completed requirements without completion responses; it never guesses the historical base.",
+        "Fresh source snapshots exclude future Git history, controller metadata and declared answer paths."
+      ],
+      "commands": [
+        "yylo-benchmark case draft --ledger-task TASK_ID",
+        "yylo-benchmark case create --help"
+      ],
       "boundary": "Review is required; no adversarial host isolation or automatic answer detection is claimed.",
-      "sourceFiles": ["src/v2/workspace.ts", "src/v2/cli.ts", "README.md"],
+      "sourceFiles": [
+        "src/v2/workspace.ts",
+        "src/v2/cli.ts",
+        "README.md"
+      ],
       "verifiedReleases": [],
       "releaseEvidence": "Source-only redesign; not verified in a published release."
     },
@@ -34,10 +44,20 @@
       "id": "attempts",
       "title": "Delegated task and workflow attempts",
       "summary": "Compare models, harnesses and configurations in independent fresh starting repositories.",
-      "details": ["YYLO Pi, command adapters and existing Workflow Runner are supported.", "Selected-step comparisons execute an independent prefix through that step for each variant, then stop.", "Workflows own sessions and dependencies. Errors are retained; no automatic compatibility repair, retry or resume."],
-      "commands": ["yylo-benchmark run --help"],
+      "details": [
+        "YYLO Pi, command adapters and existing Workflow Runner are supported.",
+        "Selected-step comparisons execute an independent prefix through that step for each variant, then stop.",
+        "Workflows own sessions and dependencies. Errors are retained; no automatic compatibility repair, retry or resume."
+      ],
+      "commands": [
+        "yylo-benchmark run --help"
+      ],
       "boundary": "Prefix results measure earlier-step effects as well. Delegation grants no production authority.",
-      "sourceFiles": ["src/v2/adapters.ts", "src/v2/harness.ts", "README.md"],
+      "sourceFiles": [
+        "src/v2/adapters.ts",
+        "src/v2/harness.ts",
+        "README.md"
+      ],
       "verifiedReleases": [],
       "releaseEvidence": "Synthetic source tests; no live model or published-package claim."
     },
@@ -45,10 +65,19 @@
       "id": "evaluation",
       "title": "Independent later evaluations",
       "summary": "New checks, judges and human assessments consume retained outputs without rerunning candidates.",
-      "details": ["No prebound evaluator catalog is required.", "Evaluators receive copies of retained files; original attempts and previous evaluations stay unchanged.", "Execution, checks, judge disagreements and evaluator errors are separate; no automatic combined verdict."],
-      "commands": ["yylo-benchmark evaluate --help"],
+      "details": [
+        "No prebound evaluator catalog is required.",
+        "Evaluators receive copies of retained files; original attempts and previous evaluations stay unchanged.",
+        "Execution, checks, judge disagreements and evaluator errors are separate; no automatic combined verdict."
+      ],
+      "commands": [
+        "yylo-benchmark evaluate --help"
+      ],
       "boundary": "Malformed, oversized or unavailable evidence is an evaluation error, not a capability verdict.",
-      "sourceFiles": ["src/v2/evaluators.ts", "README.md"],
+      "sourceFiles": [
+        "src/v2/evaluators.ts",
+        "README.md"
+      ],
       "verifiedReleases": [],
       "releaseEvidence": "Source-only redesign; not verified in a published release."
     },
@@ -56,10 +85,20 @@
       "id": "reports",
       "title": "Traceable comparison rows",
       "summary": "Display partial results, individual assessments, cost coverage, integrity errors and disqualifications honestly.",
-      "details": ["JSON and Markdown tables identify the treatment, attempt, execution status and each evaluator.", "Known answer exposure is recorded as disqualification without deleting prior evidence.", "Legacy evidence is preserved but not automatically migrated or interpreted by the new runtime."],
-      "commands": ["yylo-benchmark report --help", "yylo-benchmark disqualify --help"],
+      "details": [
+        "JSON and Markdown tables identify the treatment, attempt, execution status and each evaluator.",
+        "Known answer exposure is recorded as disqualification without deleting prior evidence.",
+        "Legacy evidence is preserved but not automatically migrated or interpreted by the new runtime."
+      ],
+      "commands": [
+        "yylo-benchmark report --help",
+        "yylo-benchmark disqualify --help"
+      ],
       "boundary": "One-shot results are not reliability estimates. Reported cost is not billing; unknowns remain unknown.",
-      "sourceFiles": ["src/v2/cli.ts", "README.md"],
+      "sourceFiles": [
+        "src/v2/cli.ts",
+        "README.md"
+      ],
       "verifiedReleases": [],
       "releaseEvidence": "Source-only redesign; not verified in a published release."
     }
