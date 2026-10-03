@@ -84,10 +84,11 @@ existing case. Cases without criteria keep legacy v3 behavior.
 For incomplete historical tasks, record reconstruction assumptions and obtain
 operator approval before candidate inspection. Review baseline/reference,
 negative and valid alternative-implementation controls; never require the
-reference patch's shape. See the packaged
-[checklist skill](skills/benchmark-checklist/SKILL.md) and its reusable
-[project](skills/benchmark-checklist/examples/project.yaml) and
-[task](skills/benchmark-checklist/examples/task.yaml) examples.
+reference patch's shape. The standalone
+[benchmark-yylo skill](https://github.com/yylo-dev/yylo-skills/tree/main/skills/benchmark-yylo)
+owns the [checklist guide](https://github.com/yylo-dev/yylo-skills/blob/main/skills/benchmark-yylo/references/checklists.md)
+and reusable project/task examples. This README documents the runtime API, not a
+second skill distribution.
 
 ## 2. Run treatments
 
@@ -282,21 +283,26 @@ quality/cost score, automatic winner, or ROI preference is imposed.
 
 Keep bundles, attempts and evaluations outside candidate source repositories. Keep credentials out of prompt/config files and retained logs. Retention and cleanup are operator decisions, not automatic runner actions.
 
-## Packaged skill (explicit use, no installation side effects)
+## Standalone skill ownership
 
-`skills/benchmark-checklist/SKILL.md` and its `examples/` ship inside this npm
-package. Read the file under the selected Benchmark package root or explicitly
-load it with your harness's supported skill mechanism. It is not automatically
-activated, globally installed, or managed by `yy scripts update` / `yy skills`.
-It does not replace the independent `benchmark-yylo` skill from `yylo-skills`.
+The canonical agent skill is **benchmark-yylo** in the dedicated
+[yylo-dev/yylo-skills repository](https://github.com/yylo-dev/yylo-skills/tree/main/skills/benchmark-yylo).
+It owns the checklist judging guide and reusable examples and is **not shipped inside this npm package**.
+There is one independently released skill, not a second project-local checklist
+skill. Follow that repository's reviewed installation process; compatible YYLO
+installations support explicit `yy skills install` / `yy skills update`.
+`yy scripts update` does not acquire skills. Do not overwrite customized or
+unrecorded agent copies. No skill is installed or activated by a Benchmark build.
 
-Discover support with `yylo-benchmark case create --help` and
-`yylo-benchmark evaluate --help`: both must show the criteria flags. The same
-source version can exist in an older installation without these additions;
-source delivery and packed verification are **not publication or activation**.
-Do not silently upgrade or switch binaries. The skill covers reconstruction,
-operator approval, controls, evidence, revisions and limits. Its example assessment
-is synthetic, not reusable evidence about your own attempt.
+Discover runtime support with `yylo-benchmark case create --help` and
+`yylo-benchmark evaluate --help`: both must show the criteria flags. A source
+version alone does not establish installed support. Runtime and skills releases
+are independent; source delivery and packed verification are **not publication or
+activation**. Do not silently upgrade or switch binaries. The standalone skill
+covers reconstruction, operator approval, controls, evidence, revisions and limits.
+Its example assessment is synthetic, not reusable evidence about your own attempt.
+Public names are YYLO Benchmark and `yylo-benchmark`; `juno-benchmark` is only the
+internal monorepo directory.
 
 ## Development
 
@@ -307,10 +313,13 @@ npm run typecheck
 npm run build
 npm pack --ignore-scripts --pack-destination /tmp
 node scripts/verify-v2-packed-acceptance.mjs /tmp/yylo-benchmark-VERSION.tgz
+# Explicit source integration check with a separately reviewed skills checkout:
+node scripts/verify-standalone-skill-examples.mjs /path/to/yylo-skills/skills/benchmark-yylo
 ```
 
 The retained script filename is historical; it verifies the thin v3 CLI, checklist
-scoring and packaged guidance from a local tarball with synthetic commands only.
+scoring and the absence of bundled skills from a local tarball with synthetic
+commands only. Its test inputs are self-contained, not canonical skill assets.
 It installs into a fresh temporary consumer using offline npm. Its cache must
 contain metadata and runtime dependency versions selected by the package ranges;
 `npm ci` alone may not populate all of them. Prepare that cache separately with

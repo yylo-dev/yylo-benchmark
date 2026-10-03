@@ -15,10 +15,25 @@ const env = { ...process.env };
 for (const key of Object.keys(env)) if (/^(GIT_|JUNO_|YYLO_|PI_)/.test(key)) delete env[key];
 await writeFile(path.join(root, 'package.json'), '{"private":true,"type":"module"}\n');
 await exec('npm', ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', path.resolve(tarball)], { cwd: root, env, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
-const assets = path.join(root, 'node_modules', '@yylo', 'benchmark', 'skills', 'benchmark-checklist');
-for (const asset of ['SKILL.md', 'examples/project.yaml', 'examples/task.yaml', 'examples/assessment.json', 'examples/human.json']) {
-  assert.ok((await readFile(path.join(assets, asset), 'utf8')).length > 0, `missing packaged guidance: ${asset}`);
-}
+const packageRoot = path.join(root, 'node_modules', '@yylo', 'benchmark');
+assert.equal(existsSync(path.join(packageRoot, 'skills')), false, 'skills belong to the independent yylo-skills repository');
+// Synthetic runtime test inputs, not canonical skill examples or an installed skill dependency.
+const fixtures = path.join(root, 'checklist-fixtures'); await mkdir(fixtures);
+for (const [name, value] of [
+  ['project', { name: 'Synthetic project', version: '1', criteria: [
+    { id: 'PROJECT.validation_isolation', pass_when: 'Validation does not write outside the supplied workspace.' },
+  ] }],
+  ['task', { name: 'Synthetic greeting', version: '1', criteria: [
+    { id: 'TASK.greeting', pass_when: 'node greet.cjs Ada exits zero and prints Hello, Ada! with a newline to stdout.' },
+    { id: 'TASK.invalid_input', pass_when: 'node greet.cjs with no argument exits nonzero with a stderr diagnostic and no stdout.' },
+  ] }],
+  ['human', { name: 'synthetic-human-checklist', kind: 'human' }],
+]) await writeFile(path.join(fixtures, `${name}.json`), JSON.stringify(value));
+const sample = { criteria: [
+  { id: 'PROJECT.validation_isolation', result: 'pass', evidence: ['Fixed fixture only executes local Node commands without file writes.'] },
+  { id: 'TASK.greeting', result: 'pass', evidence: ['Local node greet.cjs Ada: exit 0, expected greeting and newline.'] },
+  { id: 'TASK.invalid_input', result: 'fail', evidence: ['Local node greet.cjs: exit 0, stdout Hello, undefined!, empty stderr.'] },
+] };
 const source = path.join(root, 'source'); await mkdir(source);
 const git = (...args) => exec('git', args, { cwd: source, env });
 await git('init', '--quiet'); await git('config', 'user.name', 'Packed Acceptance'); await git('config', 'user.email', 'packed@localhost');
@@ -47,13 +62,13 @@ assert.equal(rows.length, 2); assert.deepEqual(rows.map((row) => row.verdict).so
 assert.ok(rows.every((row) => row.execution === 'completed' && row.evaluation_validity === 'valid' && row.loss === null && row.score_reason === 'no_checklist'));
 await run(['disqualify', '--attempt', attempt, '--reason', 'synthetic audit example']);
 assert.ok(JSON.parse(await run(['report', '--root', attempt])).every((row) => row.disqualified));
-// Exercise the packaged public criteria and examples through the installed CLI, not source imports.
+// Exercise frozen public criteria through the installed CLI, without a skills checkout or source imports.
 for (const args of [['case', 'create', '--help'], ['evaluate', '--help']]) {
   const text = await run(args); assert.ok(text.includes('--criteria')); assert.ok(text.includes('--project-criteria'));
 }
 const checklistCase = path.join(root, 'checklist-case');
 await run(['case', 'create', '--source', source, '--base', base, '--prompt', path.join(root, 'prompt.md'), '--output', checklistCase,
-  '--criteria', path.join(assets, 'examples/task.yaml'), '--project-criteria', path.join(assets, 'examples/project.yaml'), '--reviewed']);
+  '--criteria', path.join(fixtures, 'task.json'), '--project-criteria', path.join(fixtures, 'project.json'), '--reviewed']);
 const checklistTreatment = path.join(root, 'checklist-treatment.json');
 const greeting = 'console.log(`Hello, ${process.argv[2]}!`);';
 await writeFile(checklistTreatment, JSON.stringify({ ...treatment, args: ['-e', `const fs=require('fs');const prompt=fs.readFileSync(0,'utf8');if(!prompt.includes('PROJECT.validation_isolation')||!prompt.includes('TASK.invalid_input')||fs.existsSync('answer.txt'))process.exit(10);fs.writeFileSync('greet.cjs',${JSON.stringify(greeting)});console.log('implemented greeting');`] }));
@@ -62,7 +77,6 @@ await run(['run', '--case', checklistCase, '--treatment', checklistTreatment, '-
 const checklistAttempt = path.join(checklistExperiment, '1-1');
 const originalIntent = await readFile(path.join(checklistAttempt, 'attempt.json'), 'utf8');
 const originalResult = await readFile(path.join(checklistAttempt, 'result.json'), 'utf8');
-const sample = JSON.parse(await readFile(path.join(assets, 'examples/assessment.json'), 'utf8'));
 const checkProfile = path.join(root, 'checklist-check.json');
 await writeFile(checkProfile, JSON.stringify({ name: 'observed-greeting-checks', kind: 'check', command: {
   executable: process.execPath, args: ['-e', `const fs=require('fs'),assert=require('assert/strict'),cp=require('child_process');
@@ -75,7 +89,7 @@ const first = JSON.parse(await run(['evaluate', '--attempt', checklistAttempt, '
 assert.equal(first.checklist_score.loss, 1 / 3); assert.equal(first.assessment.verdict, 'fail');
 const firstFile = path.join(checklistAttempt, 'evaluations', first.id, 'result.json');
 const firstBytes = await readFile(firstFile, 'utf8');
-const human = path.join(assets, 'examples/human.json');
+const human = path.join(fixtures, 'human.json');
 const assessment = path.join(root, 'assessment.json');
 const unknown = structuredClone(sample); unknown.criteria[2].result = 'unknown'; unknown.criteria[2].evidence = ['Synthetic unavailable validation example.'];
 await writeFile(assessment, JSON.stringify(unknown));
@@ -83,7 +97,7 @@ const unscored = JSON.parse(await run(['evaluate', '--attempt', checklistAttempt
 assert.equal(unscored.checklist_score.loss, null); assert.equal(unscored.checklist_score.reason, 'insufficient_evidence');
 await writeFile(assessment, JSON.stringify({ criteria: [sample.criteria[0]] }));
 const revised = JSON.parse(await run(['evaluate', '--attempt', checklistAttempt, '--evaluator', human, '--assessment', assessment,
-  '--project-criteria', path.join(assets, 'examples/project.yaml')]));
+  '--project-criteria', path.join(fixtures, 'project.json')]));
 assert.equal(revised.checklist_score.total, 1); assert.equal(revised.checklist_score.loss, 0);
 assert.equal(revised.checklist_origin, 'evaluation');
 assert.equal(await readFile(firstFile, 'utf8'), firstBytes);
@@ -108,4 +122,4 @@ pending.child.kill('SIGTERM');
 assert.ok(await settled, 'cancelled CLI must exit unsuccessfully');
 assert.equal(existsSync(path.join(cancelledRoot, '2-1')), false, 'cancellation must not launch next variant');
 assert.equal(JSON.parse(await readFile(path.join(cancelledRoot, '1-1', 'result.json'), 'utf8')).execution.diagnostic, 'cancelled');
-console.log(JSON.stringify({ schema: 'yylo_benchmark_packed_acceptance.v3', ok: true, live_model_calls: 0, candidate_dispatch_count: 3, evaluator_dispatch_count: 3, human_assessment_count: 2, cancellation_verified: true, checklist_verified: true, packaged_assets_verified: true, root }));
+console.log(JSON.stringify({ schema: 'yylo_benchmark_packed_acceptance.v3', ok: true, live_model_calls: 0, candidate_dispatch_count: 3, evaluator_dispatch_count: 3, human_assessment_count: 2, cancellation_verified: true, checklist_verified: true, standalone_skill_boundary_verified: true, root }));
